@@ -24,7 +24,7 @@ func NewZhipuOpenAIProvider(model string) *OpeinAIProvider {
 		panic("ZHIPU_API_KEY is not set")
 	}
 
-	baseURL := "https://ark.cn-beijing.volces.com/api/coding/v3"
+	baseURL := os.Getenv("ZHIPU_BASE_URL")
 
 	return &OpeinAIProvider{
 		client: openai.NewClient(
@@ -51,10 +51,8 @@ func (p *OpeinAIProvider) Generate(ctx context.Context, msgs []schema.Message, a
 		case schema.RoleAssistant:
 			astParam := openai.ChatCompletionAssistantMessageParam{}
 
-			if msg.Content != "" {
-				astParam.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
-					OfString: openai.String(msg.Content),
-				}
+			astParam.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
+				OfString: openai.String(msg.Content),
 			}
 
 			if len(msg.ToolCalls) > 0 {

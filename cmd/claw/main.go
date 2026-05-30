@@ -2,48 +2,61 @@
 package main
 
 import (
+	"context"
+	"flag"
+	"fmt"
 	"log"
-	"net/http"
 	"os"
 
 	"github.com/Sun668/go-tiny-claw/internal/engine"
-	"github.com/Sun668/go-tiny-claw/internal/feishu"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
+	"github.com/Sun668/go-tiny-claw/internal/schema"
 	"github.com/Sun668/go-tiny-claw/internal/tools"
-	"github.com/larksuite/oapi-sdk-go/v3/core/httpserverext"
 )
 
 func main() {
-	// 1. 初始化引擎依赖
-	workDir, _ := os.Getwd()
+	// 通过命令行参数接收用户的 prompt
+	promptPtr := flag.String("prompt", "", "要交给 Agent 执行的任务描述")
+	flag.Parse()
 
-	// 默认使用智谱 GLM-4
+	if *promptPtr == "" {
+		fmt.Println("用法: go run cmd/claw/main.go -prompt \"你的任务指令\"")
+		os.Exit(1)
+	}
+
 	if os.Getenv("ZHIPU_API_KEY") == "" {
 		log.Fatal("请先导出 ZHIPU_API_KEY 环境变量")
 	}
+
+	workDir, _ := os.Getwd()
+	workDir += "/workspace"
 	llmProvider := provider.NewZhipuOpenAIProvider("glm-5.1")
 
+	// 挂载 4 大基础工具
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
 	registry.Register(tools.NewEditFileTool(workDir))
 
-	// 开启慢思考
-	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true)
+	// 实例化引擎并开启计划模式 (PlanMode=true)
+	eng := engine.NewAgentEngine(llmProvider, registry, false, true)
+	reporter := engine.NewTerminalReporter()
 
-	// 2. 初始化飞书 Bot 调度器
-	bot := feishu.NewFeishuBot(eng)
-	handler := httpserverext.NewEventHandlerFunc(bot.GetEventDispatcher())
+	// 我们使用一个固定的 SessionID，以便在多次运行之间共享基于内存的“短期工作记忆”。
+	// (在真实的 CLI 中，如果进程重启，Session 的内存历史其实是丢失的。
+	// 但这正是我们要演示的重点：即便短期内存丢失，只要 TODO.md 还在，任务就能继续！)
+	sessionID := "task_web_server_01"
+	sess := engine.GlobalSessionMgr.GetOrCreate(sessionID, workDir)
 
-	// 3. 注册路由并启动 HTTP 服务
-	http.HandleFunc("/webhook/event", handler)
+	log.Printf("\n>>> 🚀 收到指令: %s\n", *promptPtr)
 
-	port := ":48080"
-	log.Printf("🚀 go-tiny-claw 飞书服务端已启动，正在监听 %s 端口\n", port)
+	// 将用户的 Prompt 压入 Session
+	sess.Append(schema.Message{Role: schema.RoleUser, Content: *promptPtr})
 
-	err := http.ListenAndServe(port, nil)
+	// 唤醒引擎执行
+	err := eng.Run(context.Background(), sess, reporter)
 	if err != nil {
-		log.Fatalf("服务器启动失败: %v", err)
+		log.Fatalf("引擎运行崩溃: %v", err)
 	}
 }
