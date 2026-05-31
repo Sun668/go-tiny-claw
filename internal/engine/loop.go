@@ -1,10 +1,10 @@
-// internal/engine/loop.go
 package engine
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
@@ -17,94 +17,110 @@ type AgentEngine struct {
 	provider       provider.LLMProvider
 	registry       tools.Registry
 	EnableThinking bool
-	PlanMode       bool
+	PlanMode       bool // 【新增】计划模式开关
 	compactor      *ctxpkg.Compactor
+	recovery       *ctxpkg.RecoveryManager // 【新增】自愈管理器
 }
 
-// 【注意】：我们移除了 Engine 层级的 WorkDir，因为 WorkDir 现在应该跟随 Session 走！
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
 	return &AgentEngine{
 		provider:       p,
 		registry:       r,
 		EnableThinking: enableThinking,
 		PlanMode:       planMode,
-		compactor:      ctxpkg.NewCompactor(3000, 6),
+		compactor:      ctxpkg.NewCompactor(20000, 6),
+		recovery:       ctxpkg.NewRecoveryManager(),
 	}
 }
 
-// 【核心改造】: 移除 userPrompt 参数，改为接收一个具体的 Session 实例
-func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Reporter) error {
-	log.Printf("[Engine] 唤醒会话 [%s]，锁定工作区: %s\n", session.ID, session.WorkDir)
+// internal/engine/loop.go
 
-	// 根据当前 Session 的工作区，动态组装最新的 System Prompt
+func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter Reporter) error {
+	log.Printf("[Engine] 唤醒会话 [%s]，工作区: %s\n", session.ID, session.WorkDir)
+
 	composer := ctxpkg.NewPromptComposer(session.WorkDir, e.PlanMode)
 	systemMsg := composer.Build()
 
 	for {
 		availableTools := e.registry.GetAvailableTools()
-
-		// 1. 【上下文组装】: System Prompt + 截取最近的 6 条消息作为 Working Memory
-		// 在实际业务中，由于工具返回结果可能很长，短期工作记忆往往设为 6-10 条足以维系连贯对话
-		workingMemory := session.GetWorkingMemory(6)
+		workingMemory := session.GetWorkingMemory(20)
 
 		var contextHistory []schema.Message
 		contextHistory = append(contextHistory, systemMsg)
 		contextHistory = append(contextHistory, workingMemory...)
+		compactedContext := e.compactor.Compact(contextHistory)
 
-		compactedHistory := e.compactor.Compact(contextHistory)
+		// 用于存放本轮 Turn 合并后的内容
+		var currentTurnThinkingContent string
 
-		// 2. ================= Phase 1: Thinking =================
+		// ================= Phase 1: Thinking =================
 		if e.EnableThinking {
 			if reporter != nil {
 				reporter.OnThinking(ctx)
 			}
 
-			thinkResp, err := e.provider.Generate(ctx, compactedHistory, nil)
+			thinkResp, err := e.provider.Generate(ctx, compactedContext, nil)
 			if err != nil {
 				return fmt.Errorf("Thinking 阶段失败: %w", err)
 			}
 			if thinkResp.Content != "" {
-				// 将思考过程持久化到 Session 中！
-				session.Append(*thinkResp)
-				// 把它追加到当前这一轮的临时上下文中，供 Action 阶段使用
-				compactedHistory = append(compactedHistory, *thinkResp)
+				// 【修改点】：思考内容暂存，先不 Append 到 session
+				currentTurnThinkingContent = thinkResp.Content
+
+				// 为了让 Phase 2 能看到刚才的思考，我们临时将其加入 contextHistory
+				// 注意：这里仅用于本次 API 请求，不代表最终 Session 结构
+				compactedContext = append(compactedContext, *thinkResp)
 			}
 		}
 
-		// 3. ================= Phase 2: Action =================
-		actionResp, err := e.provider.Generate(ctx, compactedHistory, availableTools)
+		// ================= Phase 2: Action =================
+		actionResp, err := e.provider.Generate(ctx, compactedContext, availableTools)
 		if err != nil {
 			return fmt.Errorf("Action 阶段失败: %w", err)
 		}
 
-		// 将大模型的行动响应持久化到 Session 中
-		session.Append(*actionResp)
-		compactedHistory = append(compactedHistory, *actionResp)
+		// 【核心修正】：合并 Thinking 和 Action 的内容
+		// 构造一条唯一的、合规的 Assistant 消息
+		finalAssistantMsg := schema.Message{
+			Role:      schema.RoleAssistant,
+			Content:   strings.TrimSpace(currentTurnThinkingContent + "\n" + actionResp.Content),
+			ToolCalls: actionResp.ToolCalls,
+		}
 
+		// 将合并后的合规消息存入持久化 Session
+		session.Append(finalAssistantMsg)
+
+		// 汇报给用户
 		if actionResp.Content != "" && reporter != nil {
 			reporter.OnMessage(ctx, actionResp.Content)
 		}
 
+		// 如果没有工具调用，结束本轮对话
 		if len(actionResp.ToolCalls) == 0 {
-			// 如果没有工具调用，说明本次任务已完成，打破 ReAct 循环，挂起等待人类的下一条指令
 			break
 		}
 
-		// 4. ================= 并发执行底层工具 =================
+		// ================= 执行工具并记录 Observation =================
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 		var wg sync.WaitGroup
 
 		for i, toolCall := range actionResp.ToolCalls {
 			wg.Add(1)
-
 			go func(idx int, call schema.ToolCall) {
 				defer wg.Done()
-
 				if reporter != nil {
 					reporter.OnToolCall(ctx, call.Name, string(call.Arguments))
 				}
 
 				result := e.registry.Execute(ctx, call)
+
+				finalOutput := result.Output
+				if result.IsError {
+					finalOutput = e.recovery.AnalyzeAndInject(call.Name, finalOutput)
+					log.Printf(" -> [Go-%d] ❌ 注入救援指南: %s\n", idx, finalOutput)
+				} else {
+					log.Printf(" -> [Go-%d] ✅ 工具执行成功 (返回 %d 字节)\n", idx, len(result.Output))
+				}
 
 				if reporter != nil {
 					displayOutput := result.Output
@@ -124,7 +140,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 
 		wg.Wait()
 
-		// 将所有的工具执行结果（Observation）持久化到 Session 中，开启下一轮的复盘与推理
+		// 工具执行结果作为 RoleUser 消息存入，保证了下一轮循环时 Role 必然是 User -> Assistant 交替
 		session.Append(observationMsgs...)
 	}
 

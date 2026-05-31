@@ -1,7 +1,7 @@
-# TODO
+# 执行清单
 
-- [x] 初始化 Go 模块 (go.mod)
-- [x] 创建入口文件 cmd/server/main.go
-- [x] 创建路由处理函数 internal/handler/handler.go
-- [x] 创建日志中间件 internal/middleware/logging.go
-- [ ] 编译并运行验证
+- [x] 初始化 Go Module (go.mod)
+- [ ] 创建 internal/handler/handler.go — 路由处理器
+- [ ] 创建 internal/middleware/middleware.go — 中间件
+- [ ] 创建 cmd/server/main.go — 入口文件
+- [ ] 编译验证，确保项目可构建运行

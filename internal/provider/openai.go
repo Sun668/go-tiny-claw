@@ -12,36 +12,31 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 )
 
-type OpeinAIProvider struct {
+type OpenAIProvider struct {
 	client openai.Client
 	model  string
 }
 
-func NewZhipuOpenAIProvider(model string) *OpeinAIProvider {
+func NewZhipuOpenAIProvider(model string) *OpenAIProvider {
 	apiKey := os.Getenv("ZHIPU_API_KEY")
-
 	if apiKey == "" {
-		panic("ZHIPU_API_KEY is not set")
+		panic("请设置 ZHIPU_API_KEY 环境变量")
 	}
-
 	baseURL := os.Getenv("ZHIPU_BASE_URL")
-
-	return &OpeinAIProvider{
-		client: openai.NewClient(
-			option.WithAPIKey(apiKey),
-			option.WithBaseURL(baseURL),
-		),
-		model: model,
+	return &OpenAIProvider{
+		client: openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
+		model:  model,
 	}
 }
 
-func (p *OpeinAIProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	var openaiMsgs []openai.ChatCompletionMessageParamUnion
 
 	for _, msg := range msgs {
 		switch msg.Role {
 		case schema.RoleSystem:
 			openaiMsgs = append(openaiMsgs, openai.SystemMessage(msg.Content))
+
 		case schema.RoleUser:
 			if msg.ToolCallID != "" {
 				openaiMsgs = append(openaiMsgs, openai.ToolMessage(msg.Content, msg.ToolCallID))
@@ -51,13 +46,13 @@ func (p *OpeinAIProvider) Generate(ctx context.Context, msgs []schema.Message, a
 		case schema.RoleAssistant:
 			astParam := openai.ChatCompletionAssistantMessageParam{}
 
+			// 即使是空字符串 ""，也要发给智谱，否则会触发 1214 错误码
 			astParam.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
 				OfString: openai.String(msg.Content),
 			}
 
 			if len(msg.ToolCalls) > 0 {
 				var toolCalls []openai.ChatCompletionMessageToolCallUnionParam
-
 				for _, tc := range msg.ToolCalls {
 					toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallUnionParam{
 						OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
@@ -70,7 +65,6 @@ func (p *OpeinAIProvider) Generate(ctx context.Context, msgs []schema.Message, a
 						},
 					})
 				}
-
 				astParam.ToolCalls = toolCalls
 			}
 
@@ -78,13 +72,12 @@ func (p *OpeinAIProvider) Generate(ctx context.Context, msgs []schema.Message, a
 				OfAssistant: &astParam,
 			})
 		}
-
 	}
-	var openaiTools []openai.ChatCompletionToolUnionParam
 
+	// v3 新 API：ChatCompletionToolUnionParam + ChatCompletionFunctionTool()
+	var openaiTools []openai.ChatCompletionToolUnionParam
 	for _, toolDef := range availableTools {
 		var params shared.FunctionParameters
-
 		if m, ok := toolDef.InputSchema.(map[string]interface{}); ok {
 			params = shared.FunctionParameters(m)
 		} else {
@@ -105,13 +98,11 @@ func (p *OpeinAIProvider) Generate(ctx context.Context, msgs []schema.Message, a
 		Model:    p.model,
 		Messages: openaiMsgs,
 	}
-
 	if len(openaiTools) > 0 {
 		params.Tools = openaiTools
 	}
 
 	resp, err := p.client.Chat.Completions.New(ctx, params)
-
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI/Zhipu API 请求失败: %w", err)
 	}
@@ -120,18 +111,19 @@ func (p *OpeinAIProvider) Generate(ctx context.Context, msgs []schema.Message, a
 	}
 
 	choice := resp.Choices[0].Message
-
 	resultMsg := &schema.Message{
 		Role:    schema.RoleAssistant,
 		Content: choice.Content,
 	}
 
 	for _, tc := range choice.ToolCalls {
-		resultMsg.ToolCalls = append(resultMsg.ToolCalls, schema.ToolCall{
-			ID:        tc.ID,
-			Name:      tc.Function.Name,
-			Arguments: []byte(tc.Function.Arguments),
-		})
+		if tc.Type == "function" {
+			resultMsg.ToolCalls = append(resultMsg.ToolCalls, schema.ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: []byte(tc.Function.Arguments),
+			})
+		}
 	}
 
 	return resultMsg, nil

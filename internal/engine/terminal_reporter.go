@@ -1,4 +1,3 @@
-// internal/engine/terminal_reporter.go
 package engine
 
 import (
@@ -7,7 +6,6 @@ import (
 	"strings"
 )
 
-// TerminalReporter 实现了 Reporter 接口，用于在终端直观地打印 Agent 的状态
 type TerminalReporter struct{}
 
 func NewTerminalReporter() *TerminalReporter {
@@ -20,7 +18,7 @@ func (r *TerminalReporter) OnThinking(ctx context.Context) {
 
 func (r *TerminalReporter) OnToolCall(ctx context.Context, toolName string, args string) {
 	fmt.Printf("[🛠️ 调用工具] %s\n", toolName)
-	// 截断过长的参数显示，保持终端清爽
+	// 清理参数中的换行符和特殊字符
 	displayArgs := strings.ReplaceAll(args, "\n", "\\n")
 	displayArgs = strings.ReplaceAll(displayArgs, "\r", "\\r")
 	if len(displayArgs) > 150 {

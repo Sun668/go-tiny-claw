@@ -1,4 +1,3 @@
-// internal/tools/write_file.go
 package tools
 
 import (
@@ -12,7 +11,7 @@ import (
 )
 
 type WriteFileTool struct {
-	workDir string // 工作区约束
+	workDir string
 }
 
 func NewWriteFileTool(workDir string) *WriteFileTool {
@@ -55,15 +54,12 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "", fmt.Errorf("参数解析失败: %w", err)
 	}
 
-	// 【安全防线】：限制在 WorkDir 下执行，防止大模型修改系统级文件
 	fullPath := filepath.Join(t.workDir, input.Path)
 
-	// 自动创建缺失的父级目录
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return "", fmt.Errorf("创建父目录失败: %w", err)
 	}
 
-	// 写入文件内容，权限设为 0644
 	err := os.WriteFile(fullPath, []byte(input.Content), 0644)
 	if err != nil {
 		return "", fmt.Errorf("写入文件失败: %w", err)

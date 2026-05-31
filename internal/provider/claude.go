@@ -1,4 +1,3 @@
-// internal/provider/claude.go
 package provider
 
 import (
@@ -22,7 +21,7 @@ func NewZhipuClaudeProvider(model string) *ClaudeProvider {
 	if apiKey == "" {
 		panic("请设置 ZHIPU_API_KEY 环境变量")
 	}
-	baseURL := "https://ark.cn-beijing.volces.com/api/coding"
+	baseURL := "https://open.bigmodel.cn/api/anthropic"
 	return &ClaudeProvider{
 		client: anthropic.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
 		model:  model,
@@ -33,7 +32,6 @@ func (p *ClaudeProvider) Generate(ctx context.Context, msgs []schema.Message, av
 	var anthropicMsgs []anthropic.MessageParam
 	var systemPrompt string
 
-	// 1. 消息翻译
 	for _, msg := range msgs {
 		switch msg.Role {
 		case schema.RoleSystem:
@@ -50,12 +48,10 @@ func (p *ClaudeProvider) Generate(ctx context.Context, msgs []schema.Message, av
 			}
 		case schema.RoleAssistant:
 			var blocks []anthropic.ContentBlockParamUnion
-			if msg.Content != "" {
-				blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
-			}
-
-			// 将历史工具调用转回 Claude 特有的 ToolUseBlockParam
+			// 即使 Content 是空的，也要填充一个空的 TextBlock，否则引发1214错误
+			blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
 			for _, tc := range msg.ToolCalls {
+				// 新版 SDK：手动构造 ToolUse block
 				var inputMap map[string]interface{}
 				_ = json.Unmarshal(tc.Arguments, &inputMap)
 				blocks = append(blocks, anthropic.ContentBlockParamUnion{
@@ -72,10 +68,10 @@ func (p *ClaudeProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		}
 	}
 
-	// 2. 工具 Schema 翻译
 	var anthropicTools []anthropic.ToolUnionParam
 	for _, toolDef := range availableTools {
-		// ToolInputSchemaParam 是结构体，需要通过 Properties 字段精准填充
+		// ToolInputSchemaParam 是结构体，需要通过 Properties 字段填充
+		// InputSchema 里的 "properties" 值取出来赋给它
 		var properties map[string]any
 		var required []string
 
@@ -99,7 +95,6 @@ func (p *ClaudeProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{OfTool: &tp})
 	}
 
-	// 3. 构建请求并发送
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(p.model),
 		MaxTokens: 4096,
@@ -121,7 +116,6 @@ func (p *ClaudeProvider) Generate(ctx context.Context, msgs []schema.Message, av
 		return nil, fmt.Errorf("Claude/Zhipu API 请求失败: %w", err)
 	}
 
-	// 4. 反向解析
 	resultMsg := &schema.Message{
 		Role: schema.RoleAssistant,
 	}
