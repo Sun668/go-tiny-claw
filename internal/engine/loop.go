@@ -20,6 +20,7 @@ type AgentEngine struct {
 	PlanMode       bool // 【新增】计划模式开关
 	compactor      *ctxpkg.Compactor
 	recovery       *ctxpkg.RecoveryManager // 【新增】自愈管理器
+	injector       *ReminderInjector
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
@@ -30,6 +31,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 		PlanMode:       planMode,
 		compactor:      ctxpkg.NewCompactor(20000, 6),
 		recovery:       ctxpkg.NewRecoveryManager(),
+		injector:       NewReminderInjector(),
 	}
 }
 
@@ -104,6 +106,9 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 		var wg sync.WaitGroup
 
+		var lastToolCall schema.ToolCall
+		var lastToolResult schema.ToolResult
+
 		for i, toolCall := range actionResp.ToolCalls {
 			wg.Add(1)
 			go func(idx int, call schema.ToolCall) {
@@ -135,6 +140,11 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 					Content:    result.Output,
 					ToolCallID: call.ID,
 				}
+
+				if idx == 0 {
+					lastToolCall = call
+					lastToolResult = result
+				}
 			}(i, toolCall)
 		}
 
@@ -142,6 +152,11 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 		// 工具执行结果作为 RoleUser 消息存入，保证了下一轮循环时 Role 必然是 User -> Assistant 交替
 		session.Append(observationMsgs...)
+
+		reminderMsg := e.injector.CheckAndInject(lastToolCall, lastToolResult)
+		if reminderMsg != nil {
+			session.Append(*reminderMsg)
+		}
 	}
 
 	return nil
