@@ -14,21 +14,29 @@ type BaseTool interface {
 	Definition() schema.ToolDefinition
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
+type MiddlewareFunc func(ctx context.Context, call schema.ToolCall) (allowed bool, rejectReason string)
 
 type Registry interface {
 	Register(tool BaseTool)
+	Use(middleware MiddlewareFunc)
 	GetAvailableTools() []schema.ToolDefinition
 	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
 }
 
 type registryImpl struct {
-	tools map[string]BaseTool
+	tools       map[string]BaseTool
+	middlewares []MiddlewareFunc
 }
 
 func NewRegistry() Registry {
 	return &registryImpl{
-		tools: make(map[string]BaseTool),
+		tools:       make(map[string]BaseTool),
+		middlewares: make([]MiddlewareFunc, 0),
 	}
+}
+
+func (r *registryImpl) Use(middleware MiddlewareFunc) {
+	r.middlewares = append(r.middlewares, middleware)
 }
 
 func (r *registryImpl) Register(tool BaseTool) {
@@ -56,6 +64,18 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 			ToolCallID: call.ID,
 			Output:     errMsg,
 			IsError:    true,
+		}
+	}
+
+	for _, middleware := range r.middlewares {
+		allowed, rejectReason := middleware(ctx, call)
+		if !allowed {
+			log.Printf("[Registry] ⚠️ 工具 %s 被 Middleware 拦截: %s\n", call.Name, rejectReason)
+			return schema.ToolResult{
+				ToolCallID: call.ID,
+				Output:     rejectReason,
+				IsError:    true,
+			}
 		}
 	}
 

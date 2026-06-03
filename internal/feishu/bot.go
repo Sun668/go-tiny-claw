@@ -9,9 +9,11 @@ import (
 	"strings"
 
 	"github.com/Sun668/go-tiny-claw/internal/engine"
+	"github.com/Sun668/go-tiny-claw/internal/schema"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
+	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 )
 
@@ -20,9 +22,11 @@ type FeishuBot struct {
 	appID     string
 	appSecret string
 	engine    *engine.AgentEngine
+	sess      *ctxpkg.Session
+	r         *FeishuReporter
 }
 
-func NewFeishuBot(eng *engine.AgentEngine) *FeishuBot {
+func NewFeishuBot(eng *engine.AgentEngine, sess *ctxpkg.Session) *FeishuBot {
 	appID := os.Getenv("FEISHU_APP_ID")
 	appSecret := os.Getenv("FEISHU_APP_SECRET")
 
@@ -37,6 +41,7 @@ func NewFeishuBot(eng *engine.AgentEngine) *FeishuBot {
 		appID:     appID,
 		appSecret: appSecret,
 		engine:    eng,
+		sess:      sess,
 	}
 }
 
@@ -53,6 +58,21 @@ func (b *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
 			chatId := *event.Event.Message.ChatId
 			log.Printf("[Feishu] 收到会话 %s 消息: %s\n", chatId, contentStr)
 
+			if strings.HasPrefix(contentStr, "approve ") {
+				taskID := strings.TrimPrefix(contentStr, "approve ")
+				taskID = strings.TrimSpace(taskID)
+				GlobalApprovalMgr.ResolveApproval(taskID, true, "人类管理员已批准操作")
+				return nil
+			}
+
+			if strings.HasPrefix(contentStr, "reject ") {
+				taskID := strings.TrimPrefix(contentStr, "reject ")
+				taskID = strings.TrimSpace(taskID)
+				GlobalApprovalMgr.ResolveApproval(taskID, false, "人类管理员认为该操作存在极高风险，已无情拒绝")
+				log.Printf("[Feishu] 会话 %s: 🚫 已拒绝任务 %s", chatId, taskID)
+				return nil
+			}
+
 			go b.handleAgentRun(chatId, contentStr)
 
 			return nil
@@ -65,13 +85,22 @@ func (b *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
 	return handler
 }
 
+func (b *FeishuBot) Reporter() *FeishuReporter {
+	return b.r
+}
+
 func (b *FeishuBot) handleAgentRun(chatId string, prompt string) {
 	reporter := &FeishuReporter{
 		client: b.client,
 		chatId: chatId,
 	}
 
-	err := b.engine.Run(context.Background(), prompt, reporter)
+	b.r = reporter
+	b.sess.Append(schema.Message{
+		Role:    schema.RoleUser,
+		Content: prompt,
+	})
+	err := b.engine.Run(context.Background(), b.sess, reporter)
 	if err != nil {
 		reporter.sendMsg(fmt.Sprintf("❌ Agent 运行崩溃: %v", err))
 	}
@@ -91,7 +120,7 @@ func (r *FeishuReporter) sendMsg(text string) {
 	contentStr := string(contentBytes)
 
 	msgReq := larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.ReceiveIdTypeChatId).
+		ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(r.chatId).
 			MsgType(larkim.MsgTypeText).
