@@ -20,43 +20,28 @@ func main() {
 
 	workDir, _ := os.Getwd()
 	workDir += "/workspace"
+	llmProvider := provider.NewZhipuOpenAIProvider("z-ai/glm-4.5-air")
 
-	llmProvider := provider.NewZhipuOpenAIProvider("z-ai/glm-4.5-air") // Claude 3.5 更佳
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewWriteFileTool(workDir))
+
+	eng := engine.NewAgentEngine(llmProvider, registry, false, false)
 	reporter := engine.NewTerminalReporter()
+	sess := ctxpkg.GlobalSessionMgr.GetOrCreate("test_trace_001", workDir)
 
-	// 【防御沙箱】为子智能体准备受限的只读注册表
-	readOnlyRegistry := tools.NewRegistry()
-	readOnlyRegistry.Register(tools.NewReadFileTool(workDir))
-	readOnlyRegistry.Register(tools.NewBashTool(workDir)) // 允许简单的 grep 等搜索操作
-
-	// 为主智能体准备全功能注册表
-	mainRegistry := tools.NewRegistry()
-	mainRegistry.Register(tools.NewReadFileTool(workDir))
-	mainRegistry.Register(tools.NewWriteFileTool(workDir))
-	mainRegistry.Register(tools.NewBashTool(workDir))
-	mainRegistry.Register(tools.NewEditFileTool(workDir))
-
-	// 初始化主引擎
-	eng := engine.NewAgentEngine(llmProvider, mainRegistry, false, false)
-
-	// 【核心装配】：将带有 Engine 引用和只读 Registry 的 Subagent 工具注册进主线
-	mainRegistry.Register(tools.NewSubagentTool(eng, readOnlyRegistry, reporter))
-
-	sessionID := "test_subagent_001"
-	sess := ctxpkg.GlobalSessionMgr.GetOrCreate(sessionID, workDir)
-
+	// 触发一个跨工具类型的并发任务
 	prompt := `
-    我需要你在这个遗留项目里，找到那个“核心密码”。
-    为了防止污染主上下文，请你务必派出子智能体（spawn_subagent）去执行探索任务。
-    你可以让子智能体使用 bash 去查找当前目录（及其所有子目录）下名为 config.txt 的文件。
-    子智能体拿到密码向你汇报后，请你亲自使用 write_file 工具，将密码写在根目录的 answer.txt 里。
+    为了加快执行速度，请你在一轮回复中，【同时并行】完成以下两件事：
+    1. 使用 bash 工具执行 'sleep 2 && echo "系统环境检查完毕"'
+    2. 使用 write_file 工具，在当前目录下创建一个 'trace_test.md'，内容写上 "测试并发的写入"。
+    请确保你是分别调用两个不同的工具，不要试图把它们合并成一个命令！
     `
-
-	log.Println("\n>>> 🚀 启动多智能体协同测试...")
 	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
 
+	log.Println("\n>>> 🚀 启动带 Tracing 链路追踪的测试...")
 	err := eng.Run(context.Background(), sess, reporter)
 	if err != nil {
-		log.Fatalf("引擎运行崩溃: %v", err)
+		log.Fatalf("引擎崩溃: %v", err)
 	}
 }

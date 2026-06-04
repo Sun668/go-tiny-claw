@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
+	"github.com/Sun668/go-tiny-claw/internal/observability"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 	"github.com/Sun668/go-tiny-claw/internal/tools"
@@ -40,10 +41,27 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter Reporter) error {
 	log.Printf("[Engine] 唤醒会话 [%s]，工作区: %s\n", session.ID, session.WorkDir)
 
+	ctx, rootSpan := observability.StartSpan(ctx, "Agent.Run")
+	rootSpan.AddAttribute("SessionID", session.ID)
+	rootSpan.AddAttribute("WorkDir", session.WorkDir)
+
+	defer func() {
+		rootSpan.EndSpan()
+		_ = observability.ExportTraceToFile(rootSpan, session.WorkDir, session.ID)
+		log.Printf("📊 [Tracing] 本次任务的执行回放链路已保存至工作区的 .claw/traces 目录下\n")
+	}()
+
 	composer := ctxpkg.NewPromptComposer(session.WorkDir, e.PlanMode)
 	systemMsg := composer.Build()
 
+	turnCount := 0
+
 	for {
+		turnCount++
+
+		turnCtx, turnSpan := observability.StartSpan(ctx, fmt.Sprintf("Turn-%d", turnCount))
+		defer turnSpan.EndSpan() // 利用 defer，哪怕遇到了 break 或 error 也会计算耗时
+
 		availableTools := e.registry.GetAvailableTools()
 		workingMemory := session.GetWorkingMemory(20)
 
@@ -61,7 +79,10 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 				reporter.OnThinking(ctx)
 			}
 
-			thinkResp, err := e.provider.Generate(ctx, compactedContext, nil)
+			thinkCtx, thinkSpan := observability.StartSpan(turnCtx, "LLM.Thinking")
+			thinkResp, err := e.provider.Generate(thinkCtx, compactedContext, nil)
+			thinkSpan.EndSpan() // 结束思考跨度
+
 			if err != nil {
 				return fmt.Errorf("Thinking 阶段失败: %w", err)
 			}
@@ -76,7 +97,10 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 		}
 
 		// ================= Phase 2: Action =================
-		actionResp, err := e.provider.Generate(ctx, compactedContext, availableTools)
+		actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
+		actionResp, err := e.provider.Generate(actCtx, compactedContext, availableTools)
+		actSpan.EndSpan() // 结束行动跨度
+
 		if err != nil {
 			return fmt.Errorf("Action 阶段失败: %w", err)
 		}

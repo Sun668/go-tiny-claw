@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/Sun668/go-tiny-claw/internal/observability"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -57,6 +58,11 @@ func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 }
 
 func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+	ctx, span := observability.StartSpan(ctx, "Tool.Execute")
+	span.AddAttribute("tool_name", call.Name)
+	span.AddAttribute("arguments", string(call.Arguments))
+	defer span.EndSpan() // 结束工具执行跨度
+
 	tool, exists := r.tools[call.Name]
 	if !exists {
 		errMsg := fmt.Sprintf("Error: 系统中不存在名为 '%s' 的工具。", call.Name)
