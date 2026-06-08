@@ -1,0 +1,60 @@
+{
+  "name": "Agent.Run",
+  "start_time": "2026-06-04T21:46:42.141799+08:00",
+  "end_time": "2026-06-04T21:47:01.042052+08:00",
+  "duration_ms": 18900,
+  "attributes": {
+    "SessionID": "test_trace_001",
+    "WorkDir": "/Users/sun/Documents/git/go-tiny-claw/workspace"
+  },
+  "children": [
+    {
+      "name": "Turn-1",
+      "start_time": "2026-06-04T21:46:42.141819+08:00",
+      "end_time": "2026-06-04T21:47:01.042052+08:00",
+      "duration_ms": 18900,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-06-04T21:46:42.141825+08:00",
+          "end_time": "2026-06-04T21:46:53.100563+08:00",
+          "duration_ms": 10958
+        }
+      ]
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-06-04T21:46:53.100686+08:00",
+      "end_time": "2026-06-04T21:46:53.101231+08:00",
+      "duration_ms": 0,
+      "attributes": {
+        "arguments": "{\"path\":\"trace_test.md\",\"content\":\"测试并发的写入\"}",
+        "tool_name": "write_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-06-04T21:46:53.100751+08:00",
+      "end_time": "2026-06-04T21:46:55.114976+08:00",
+      "duration_ms": 2014,
+      "attributes": {
+        "arguments": "{\"command\":\"sleep 2 \u0026\u0026 echo \\\"系统环境检查完毕\\\"\"}",
+        "tool_name": "bash"
+      }
+    },
+    {
+      "name": "Turn-2",
+      "start_time": "2026-06-04T21:46:55.115047+08:00",
+      "end_time": "2026-06-04T21:47:01.042051+08:00",
+      "duration_ms": 5927,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-06-04T21:46:55.115068+08:00",
+          "end_time": "2026-06-04T21:47:01.042019+08:00",
+          "duration_ms": 5926
+        }
+      ]
+    }
+  ]
+}

@@ -20,7 +20,7 @@ func main() {
 
 	workDir, _ := os.Getwd()
 	workDir += "/workspace"
-	llmProvider := provider.NewZhipuOpenAIProvider("z-ai/glm-4.5-air")
+	llmProvider := provider.NewZhipuOpenAIProvider("glm-5.1")
 
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewBashTool(workDir))
