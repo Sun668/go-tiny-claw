@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
 
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
@@ -23,6 +25,10 @@ type REPL struct {
 
 func (r *REPL) Run(ctx context.Context) error {
 	reader := bufio.NewReader(r.in)
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	defer signal.Stop(signals)
 
 	for {
 		fmt.Fprint(r.out, "\nclaw>")
@@ -59,9 +65,44 @@ func (r *REPL) Run(ctx context.Context) error {
 			Content: prompt,
 		})
 
-		if err := r.engine.Run(ctx, r.session, r.reporter); err != nil {
+		if err := r.runTurn(ctx, signals); err != nil {
 			fmt.Fprintf(r.out, "引擎运行出错: %v\n", err)
 		}
+	}
+}
+
+func (r *REPL) runTurn(
+	parent context.Context,
+	signals <-chan os.Signal,
+) error {
+	runCtx, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- r.engine.Run(
+			runCtx,
+			r.session,
+			r.reporter,
+		)
+	}()
+
+	select {
+	case err := <-done:
+		return err
+
+	case <-signals:
+		fmt.Fprintln(r.out, "\n正在取消当前任务...")
+		cancel()
+
+		err := <-done
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(r.out, "当前任务已取消。")
+			return nil
+		}
+
+		return err
 	}
 }
 
