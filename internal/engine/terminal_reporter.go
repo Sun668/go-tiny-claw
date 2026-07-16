@@ -45,3 +45,11 @@ func (r *TerminalReporter) OnMessage(ctx context.Context, content string) {
 	}
 	fmt.Printf("\n🤖 Agent 回复:\n%s\n\n", content)
 }
+
+func (r *TerminalReporter) OnTextDelta(ctx context.Context, delta string) {
+	fmt.Printf(delta)
+}
+
+func (r *TerminalReporter) OnTextComplete(ctx context.Context) {
+	fmt.Print("\n\n")
+}

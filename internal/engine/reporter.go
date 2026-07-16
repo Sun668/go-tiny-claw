@@ -8,3 +8,8 @@ type Reporter interface {
 	OnToolResult(ctx context.Context, toolName string, result string, isError bool)
 	OnMessage(ctx context.Context, content string)
 }
+
+type StreamReporter interface {
+	OnTextDelta(ctx context.Context, delta string)
+	OnTextComplete(ctx context.Context)
+}

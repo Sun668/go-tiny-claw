@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 	"github.com/openai/openai-go/v3"
@@ -29,7 +30,7 @@ func NewZhipuOpenAIProvider(model string) *OpenAIProvider {
 	}
 }
 
-func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p *OpenAIProvider) buildParams(msgs []schema.Message, availableTools []schema.ToolDefinition) (openai.ChatCompletionNewParams, error) {
 	var openaiMsgs []openai.ChatCompletionMessageParamUnion
 
 	for _, msg := range msgs {
@@ -101,6 +102,14 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 	if len(openaiTools) > 0 {
 		params.Tools = openaiTools
 	}
+	return params, nil
+}
+
+func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+	params, err := p.buildParams(msgs, availableTools)
+	if err != nil {
+		return nil, fmt.Errorf("构建 OpenAI 参数失败: %w", err)
+	}
 
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
@@ -134,4 +143,164 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 	}
 
 	return resultMsg, nil
+}
+
+func (p *OpenAIProvider) GenerateStream(
+	ctx context.Context,
+	msgs []schema.Message,
+	availableTools []schema.ToolDefinition,
+) (<-chan StreamEvent, error) {
+	params, err := p.buildParams(msgs, availableTools)
+	if err != nil {
+		return nil, err
+	}
+
+	params.StreamOptions.IncludeUsage = openai.Bool(true)
+
+	events := make(chan StreamEvent, 16)
+
+	go func() {
+		defer close(events)
+
+		stream := p.client.Chat.Completions.NewStreaming(ctx, params)
+		defer stream.Close()
+
+		var content strings.Builder
+		toolCalls := make([]*toolCallAccumulator, 0)
+		var usage *schema.Usage
+
+		for stream.Next() {
+			chunk := stream.Current()
+
+			if chunk.Usage.PromptTokens > 0 ||
+				chunk.Usage.CompletionTokens > 0 {
+				usage = &schema.Usage{
+					PromptTokens:     int(chunk.Usage.PromptTokens),
+					CompletionTokens: int(chunk.Usage.CompletionTokens),
+				}
+			}
+
+			if len(chunk.Choices) == 0 {
+				continue
+			}
+
+			delta := chunk.Choices[0].Delta
+
+			if delta.Content != "" {
+				content.WriteString(delta.Content)
+
+				if !sendStreamEvent(ctx, events, StreamEvent{
+					Type: StreamTextDelta,
+					Text: delta.Content,
+				}) {
+					return
+				}
+			}
+
+			for _, deltaToolCall := range delta.ToolCalls {
+				index := int(deltaToolCall.Index)
+
+				for len(toolCalls) <= index {
+					toolCalls = append(toolCalls, nil)
+				}
+
+				if toolCalls[index] == nil {
+					toolCalls[index] = &toolCallAccumulator{}
+				}
+
+				accumulator := toolCalls[index]
+
+				if deltaToolCall.ID != "" {
+					accumulator.id = deltaToolCall.ID
+				}
+
+				if deltaToolCall.Function.Name != "" {
+					accumulator.name = deltaToolCall.Function.Name
+				}
+
+				if deltaToolCall.Function.Arguments != "" {
+					accumulator.arguments.WriteString(
+						deltaToolCall.Function.Arguments,
+					)
+				}
+			}
+		}
+
+		if err := stream.Err(); err != nil {
+			if !sendStreamEvent(ctx, events, StreamEvent{
+				Type: StreamError,
+				Err:  fmt.Errorf("流式响应失败: %w", err),
+			}) {
+				return
+			}
+			return
+		}
+
+		finalMessage := &schema.Message{
+			Role:    schema.RoleAssistant,
+			Content: content.String(),
+			Usage:   usage,
+		}
+
+		for _, accumulator := range toolCalls {
+			if accumulator == nil {
+				continue
+			}
+
+			arguments := accumulator.arguments.String()
+			if arguments == "" {
+				arguments = "{}"
+			}
+
+			if !json.Valid([]byte(arguments)) {
+				sendStreamEvent(ctx, events, StreamEvent{
+					Type: StreamError,
+					Err: fmt.Errorf(
+						"工具 %s 返回非法 JSON 参数: %s",
+						accumulator.name,
+						arguments,
+					),
+				})
+				return
+			}
+
+			finalMessage.ToolCalls = append(
+				finalMessage.ToolCalls,
+				schema.ToolCall{
+					ID:        accumulator.id,
+					Name:      accumulator.name,
+					Arguments: json.RawMessage(arguments),
+				},
+			)
+		}
+
+		if !sendStreamEvent(ctx, events, StreamEvent{
+			Type:    StreamCompleted,
+			Message: finalMessage,
+			Usage:   usage,
+		}) {
+			return
+		}
+	}()
+
+	return events, nil
+}
+
+type toolCallAccumulator struct {
+	id        string
+	name      string
+	arguments strings.Builder
+}
+
+func sendStreamEvent(
+	ctx context.Context,
+	events chan<- StreamEvent,
+	event StreamEvent,
+) bool {
+	select {
+	case events <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

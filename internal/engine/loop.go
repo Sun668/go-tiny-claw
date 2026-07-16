@@ -104,7 +104,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 		// ================= Phase 2: Action =================
 		actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
-		actionResp, err := e.provider.Generate(actCtx, compactedContext, availableTools)
+		actionResp, streamed, err := e.generate(actCtx, compactedContext, availableTools, reporter, true)
 		actSpan.EndSpan() // 结束行动跨度
 
 		if err != nil {
@@ -123,7 +123,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 		session.Append(finalAssistantMsg)
 
 		// 汇报给用户
-		if actionResp.Content != "" && reporter != nil {
+		if actionResp.Content != "" && reporter != nil && !streamed {
 			reporter.OnMessage(ctx, actionResp.Content)
 		}
 
