@@ -22,6 +22,7 @@ type AgentEngine struct {
 	compactor      *ctxpkg.Compactor
 	recovery       *ctxpkg.RecoveryManager // 【新增】自愈管理器
 	injector       *ReminderInjector
+	MaxTurns       int
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
@@ -33,6 +34,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 		compactor:      ctxpkg.NewCompactor(20000, 6),
 		recovery:       ctxpkg.NewRecoveryManager(),
 		injector:       NewReminderInjector(),
+		MaxTurns:       20,
 	}
 }
 
@@ -58,6 +60,10 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 	for {
 		turnCount++
+
+		if e.MaxTurns > 0 && turnCount > e.MaxTurns {
+			return fmt.Errorf("Agent 超过最大执行轮数: %d", e.MaxTurns)
+		}
 
 		turnCtx, turnSpan := observability.StartSpan(ctx, fmt.Sprintf("Turn-%d", turnCount))
 		defer turnSpan.EndSpan() // 利用 defer，哪怕遇到了 break 或 error 也会计算耗时

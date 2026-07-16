@@ -92,3 +92,11 @@ func (sm *SessionManager) GetOrCreate(id string, workDir string) *Session {
 	sm.sessions[id] = sess
 	return sess
 }
+
+func (s *Session) Clear() {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    s.history = s.history[:0]
+    s.UpdatedAt = time.Now()
+}

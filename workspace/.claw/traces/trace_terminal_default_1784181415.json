@@ -1,0 +1,188 @@
+{
+  "name": "Agent.Run",
+  "start_time": "2026-07-16T13:56:28.489687+08:00",
+  "end_time": "2026-07-16T13:56:55.663212+08:00",
+  "duration_ms": 27173,
+  "attributes": {
+    "SessionID": "terminal_default",
+    "WorkDir": "/Users/smsun/Documents/github/go-tiny-claw/workspace"
+  },
+  "children": [
+    {
+      "name": "Turn-1",
+      "start_time": "2026-07-16T13:56:28.489959+08:00",
+      "end_time": "2026-07-16T13:56:55.663212+08:00",
+      "duration_ms": 27172,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-07-16T13:56:28.489999+08:00",
+          "end_time": "2026-07-16T13:56:32.776607+08:00",
+          "duration_ms": 4286
+        }
+      ]
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:32.776812+08:00",
+      "end_time": "2026-07-16T13:56:32.800412+08:00",
+      "duration_ms": 23,
+      "attributes": {
+        "arguments": "{\"command\":\"ls -la\"}",
+        "tool_name": "bash"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:32.776825+08:00",
+      "end_time": "2026-07-16T13:56:32.804566+08:00",
+      "duration_ms": 27,
+      "attributes": {
+        "arguments": "{\"command\":\"find . -type f -not -path './.git/*' | head -100\"}",
+        "tool_name": "bash"
+      }
+    },
+    {
+      "name": "Turn-2",
+      "start_time": "2026-07-16T13:56:32.804792+08:00",
+      "end_time": "2026-07-16T13:56:55.662764+08:00",
+      "duration_ms": 22857,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-07-16T13:56:32.804835+08:00",
+          "end_time": "2026-07-16T13:56:37.172486+08:00",
+          "duration_ms": 4367
+        }
+      ]
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:37.172598+08:00",
+      "end_time": "2026-07-16T13:56:37.173785+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"legacy/v1/auth/config.txt\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:37.172627+08:00",
+      "end_time": "2026-07-16T13:56:37.174599+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"TODO.md\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:37.172775+08:00",
+      "end_time": "2026-07-16T13:56:37.173741+08:00",
+      "duration_ms": 0,
+      "attributes": {
+        "arguments": "{\"path\":\"PLAN.md\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:37.172842+08:00",
+      "end_time": "2026-07-16T13:56:37.17456+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"answer.txt\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:37.172989+08:00",
+      "end_time": "2026-07-16T13:56:37.174617+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"go.mod\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:37.173196+08:00",
+      "end_time": "2026-07-16T13:56:37.174616+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"auth.go\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:37.173229+08:00",
+      "end_time": "2026-07-16T13:56:37.174279+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"trace_test.md\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:37.173389+08:00",
+      "end_time": "2026-07-16T13:56:37.17456+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"fake2.go\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:37.173487+08:00",
+      "end_time": "2026-07-16T13:56:37.174561+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"fake1.go\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Turn-3",
+      "start_time": "2026-07-16T13:56:37.174659+08:00",
+      "end_time": "2026-07-16T13:56:55.662389+08:00",
+      "duration_ms": 18487,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-07-16T13:56:37.17469+08:00",
+          "end_time": "2026-07-16T13:56:42.077592+08:00",
+          "duration_ms": 4902
+        }
+      ]
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-16T13:56:42.077678+08:00",
+      "end_time": "2026-07-16T13:56:42.09938+08:00",
+      "duration_ms": 21,
+      "attributes": {
+        "arguments": "{\"command\":\"cat .claw/traces/trace_test_trace_001_1784178717.json 2\u003e/dev/null | head -50\"}",
+        "tool_name": "bash"
+      }
+    },
+    {
+      "name": "Turn-4",
+      "start_time": "2026-07-16T13:56:42.099495+08:00",
+      "end_time": "2026-07-16T13:56:55.662388+08:00",
+      "duration_ms": 13562,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-07-16T13:56:42.099526+08:00",
+          "end_time": "2026-07-16T13:56:55.662185+08:00",
+          "duration_ms": 13562
+        }
+      ]
+    }
+  ]
+}
