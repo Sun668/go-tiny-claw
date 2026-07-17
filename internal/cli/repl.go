@@ -16,7 +16,7 @@ import (
 )
 
 type REPL struct {
-	in       io.Reader
+	reader   *bufio.Reader
 	out      io.Writer
 	engine   *engine.AgentEngine
 	session  *ctxpkg.Session
@@ -24,8 +24,6 @@ type REPL struct {
 }
 
 func (r *REPL) Run(ctx context.Context) error {
-	reader := bufio.NewReader(r.in)
-
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
 	defer signal.Stop(signals)
@@ -33,7 +31,7 @@ func (r *REPL) Run(ctx context.Context) error {
 	for {
 		fmt.Fprint(r.out, "\nclaw>")
 
-		line, err := reader.ReadString('\n')
+		line, err := r.reader.ReadString('\n')
 
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -106,9 +104,9 @@ func (r *REPL) runTurn(
 	}
 }
 
-func NewREPL(in io.Reader, out io.Writer, engine *engine.AgentEngine, session *ctxpkg.Session, reporter engine.Reporter) *REPL {
+func NewREPL(reader *bufio.Reader, out io.Writer, engine *engine.AgentEngine, session *ctxpkg.Session, reporter engine.Reporter) *REPL {
 	return &REPL{
-		in:       in,
+		reader:   reader,
 		out:      out,
 		engine:   engine,
 		session:  session,

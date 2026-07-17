@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -66,4 +67,8 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	}
 
 	return fmt.Sprintf("成功将内容写入到文件: %s", input.Path), nil
+}
+
+func (t *WriteFileTool) RiskLevel() approval.RiskLevel {
+	return approval.RiskMutating
 }

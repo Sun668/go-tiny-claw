@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -76,4 +77,8 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	return outputStr, nil
+}
+
+func (t *BashTool) RiskLevel() approval.RiskLevel {
+	return approval.RiskDangerous
 }

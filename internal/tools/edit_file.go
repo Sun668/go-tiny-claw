@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -157,4 +158,8 @@ func lineByLineReplace(content, oldText, newText string) (string, error) {
 	newContentLines = append(newContentLines, contentLines[matchEndIndex:]...)
 
 	return strings.Join(newContentLines, "\n"), nil
+}
+
+func (t *EditFileTool) RiskLevel() approval.RiskLevel {
+	return approval.RiskMutating
 }

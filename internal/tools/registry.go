@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/observability"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
@@ -22,6 +23,7 @@ type Registry interface {
 	Use(middleware MiddlewareFunc)
 	GetAvailableTools() []schema.ToolDefinition
 	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
+	GetRiskLevel(name string) approval.RiskLevel
 }
 
 type registryImpl struct {
@@ -100,4 +102,18 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 		Output:     output,
 		IsError:    false,
 	}
+}
+
+func (r *registryImpl) GetRiskLevel(name string) approval.RiskLevel {
+	tool, exists := r.tools[name]
+	if !exists {
+		return approval.RiskDangerous
+	}
+
+	riskedTool, ok := tool.(RiskedTool)
+	if !ok {
+		return approval.RiskDangerous
+	}
+
+	return riskedTool.RiskLevel()
 }

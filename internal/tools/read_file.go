@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -70,4 +71,8 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	}
 
 	return string(content), nil
+}
+
+func (t *ReadFileTool) RiskLevel() approval.RiskLevel {
+	return approval.RiskSafe
 }

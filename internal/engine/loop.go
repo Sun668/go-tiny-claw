@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
 	"github.com/Sun668/go-tiny-claw/internal/observability"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
@@ -23,9 +24,15 @@ type AgentEngine struct {
 	recovery       *ctxpkg.RecoveryManager // 【新增】自愈管理器
 	injector       *ReminderInjector
 	MaxTurns       int
+	approvalGate   *approval.Gate
 }
 
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
+type IndexedToolCall struct {
+	index int
+	call  schema.ToolCall
+}
+
+func NewAgentEngine(p provider.LLMProvider, r tools.Registry, approvalGate *approval.Gate, enableThinking bool, planMode bool) *AgentEngine {
 	return &AgentEngine{
 		provider:       p,
 		registry:       r,
@@ -35,6 +42,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 		recovery:       ctxpkg.NewRecoveryManager(),
 		injector:       NewReminderInjector(),
 		MaxTurns:       20,
+		approvalGate:   approvalGate,
 	}
 }
 
@@ -134,27 +142,52 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 		// ================= 执行工具并记录 Observation =================
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
+		approvedCalls := make([]IndexedToolCall, 0, len(actionResp.ToolCalls))
+		toolResults := make([]schema.ToolResult, len(actionResp.ToolCalls))
 		var wg sync.WaitGroup
 
-		var lastToolCall schema.ToolCall
-		var lastToolResult schema.ToolResult
-
 		for i, toolCall := range actionResp.ToolCalls {
+			req := approval.Request{
+				ID:        approval.NewRequestID(),
+				SessionID: session.ID,
+				ToolCall:  toolCall,
+				Risk:      e.registry.GetRiskLevel(toolCall.Name),
+			}
+			decision, err := e.approvalGate.Check(ctx, req)
+
+			if err != nil {
+				return fmt.Errorf("审批请求失败: %w", err)
+			}
+
+			if decision == approval.Deny {
+				observationMsgs[i] = schema.Message{
+					Role:       schema.RoleUser,
+					Content:    fmt.Sprintf("工具调用被拒绝: %s", toolCall.Name),
+					ToolCallID: toolCall.ID,
+				}
+				continue
+			}
+
+			approvedCalls = append(approvedCalls, IndexedToolCall{index: i, call: toolCall})
+
+		}
+
+		for _, item := range approvedCalls {
 			wg.Add(1)
-			go func(idx int, call schema.ToolCall) {
+			go func(item IndexedToolCall) {
 				defer wg.Done()
 				if reporter != nil {
-					reporter.OnToolCall(ctx, call.Name, string(call.Arguments))
+					reporter.OnToolCall(ctx, item.call.Name, string(item.call.Arguments))
 				}
 
-				result := e.registry.Execute(ctx, call)
+				result := e.registry.Execute(ctx, item.call)
 
 				finalOutput := result.Output
 				if result.IsError {
-					finalOutput = e.recovery.AnalyzeAndInject(call.Name, finalOutput)
-					log.Printf(" -> [Go-%d] ❌ 注入救援指南: %s\n", idx, finalOutput)
+					finalOutput = e.recovery.AnalyzeAndInject(item.call.Name, finalOutput)
+					log.Printf(" -> [Go-%d] ❌ 注入救援指南: %s\n", item.index, finalOutput)
 				} else {
-					log.Printf(" -> [Go-%d] ✅ 工具执行成功 (返回 %d 字节)\n", idx, len(result.Output))
+					log.Printf(" -> [Go-%d] ✅ 工具执行成功 (返回 %d 字节)\n", item.index, len(result.Output))
 				}
 
 				if reporter != nil {
@@ -162,20 +195,17 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 					if len(displayOutput) > 200 {
 						displayOutput = displayOutput[:200] + "... (已截断)"
 					}
-					reporter.OnToolResult(ctx, call.Name, displayOutput, result.IsError)
+					reporter.OnToolResult(ctx, item.call.Name, displayOutput, result.IsError)
 				}
 
-				observationMsgs[idx] = schema.Message{
+				observationMsgs[item.index] = schema.Message{
 					Role:       schema.RoleUser,
 					Content:    result.Output,
-					ToolCallID: call.ID,
+					ToolCallID: item.call.ID,
 				}
 
-				if idx == 0 {
-					lastToolCall = call
-					lastToolResult = result
-				}
-			}(i, toolCall)
+				toolResults[item.index] = result
+			}(item)
 		}
 
 		wg.Wait()
@@ -183,9 +213,14 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 		// 工具执行结果作为 RoleUser 消息存入，保证了下一轮循环时 Role 必然是 User -> Assistant 交替
 		session.Append(observationMsgs...)
 
-		reminderMsg := e.injector.CheckAndInject(lastToolCall, lastToolResult)
-		if reminderMsg != nil {
-			session.Append(*reminderMsg)
+		for i, result := range toolResults {
+			reminderMsg := e.injector.CheckAndInject(
+				actionResp.ToolCalls[i],
+				result,
+			)
+			if reminderMsg != nil {
+				session.Append(*reminderMsg)
+			}
 		}
 	}
 

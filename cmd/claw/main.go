@@ -2,10 +2,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"log"
 	"os"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/cli"
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
 	"github.com/Sun668/go-tiny-claw/internal/engine"
@@ -20,7 +22,7 @@ func main() {
 
 	workDir, _ := os.Getwd()
 	workDir += "/workspace"
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-5.2")
+	llmProvider := provider.NewOpenAICompatibleProvider("glm-5-2-260617")
 
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewBashTool(workDir))
@@ -28,11 +30,19 @@ func main() {
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewEditFileTool(workDir))
 
-	eng := engine.NewAgentEngine(llmProvider, registry, false, false)
+	reader := bufio.NewReader(os.Stdin)
+
+	handler := approval.NewTerminalApprovalHandler(reader, os.Stdout)
+
+	grantStore := approval.NewMemoryGrantStore()
+
+	gate := approval.NewGate(approval.DefaultPolicy{}, handler, grantStore)
+
+	eng := engine.NewAgentEngine(llmProvider, registry, gate, false, false)
 	reporter := engine.NewTerminalReporter()
 	sess := ctxpkg.GlobalSessionMgr.GetOrCreate("terminal_default", workDir)
 
-	repl := cli.NewREPL(os.Stdin, os.Stdout, eng, sess, reporter)
+	repl := cli.NewREPL(reader, os.Stdout, eng, sess, reporter)
 
 	if err := repl.Run(context.Background()); err != nil {
 		log.Fatalf("引擎崩溃: %v", err)
