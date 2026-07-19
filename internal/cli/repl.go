@@ -10,17 +10,19 @@ import (
 	"os/signal"
 	"strings"
 
-	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
-	"github.com/Sun668/go-tiny-claw/internal/engine"
 	"github.com/Sun668/go-tiny-claw/internal/reporter"
-	"github.com/Sun668/go-tiny-claw/internal/schema"
+	runtime "github.com/Sun668/go-tiny-claw/internal/runtime"
 )
+
+type Runtime interface {
+	Start(parent context.Context, prompt string, reporter reporter.Reporter) (*runtime.Task, error)
+	Clear()
+}
 
 type REPL struct {
 	reader   *bufio.Reader
 	out      io.Writer
-	engine   *engine.AgentEngine
-	session  *ctxpkg.Session
+	runtime  Runtime
 	reporter reporter.Reporter
 }
 
@@ -51,7 +53,7 @@ func (r *REPL) Run(ctx context.Context) error {
 		case "/exit", "/quit":
 			return nil
 		case "/clear":
-			r.session.Clear()
+			r.runtime.Clear()
 			fmt.Fprintln(r.out, "会话已清空。")
 			continue
 		case "/help":
@@ -59,12 +61,7 @@ func (r *REPL) Run(ctx context.Context) error {
 			continue
 		}
 
-		r.session.Append(schema.Message{
-			Role:    schema.RoleUser,
-			Content: prompt,
-		})
-
-		if err := r.runTurn(ctx, signals); err != nil {
+		if err := r.runTurn(ctx, prompt, signals); err != nil {
 			fmt.Fprintf(r.out, "引擎运行出错: %v\n", err)
 		}
 	}
@@ -72,30 +69,23 @@ func (r *REPL) Run(ctx context.Context) error {
 
 func (r *REPL) runTurn(
 	parent context.Context,
+	prompt string,
 	signals <-chan os.Signal,
 ) error {
-	runCtx, cancel := context.WithCancel(parent)
-	defer cancel()
-
-	done := make(chan error, 1)
-
-	go func() {
-		done <- r.engine.Run(
-			runCtx,
-			r.session,
-			r.reporter,
-		)
-	}()
+	task, err := r.runtime.Start(parent, prompt, r.reporter)
+	if err != nil {
+		return err
+	}
 
 	select {
-	case err := <-done:
+	case err := <-task.Done():
 		return err
 
 	case <-signals:
 		fmt.Fprintln(r.out, "\n正在取消当前任务...")
-		cancel()
+		task.Cancel()
 
-		err := <-done
+		err := <-task.Done()
 		if errors.Is(err, context.Canceled) {
 			fmt.Fprintln(r.out, "当前任务已取消。")
 			return nil
@@ -105,12 +95,11 @@ func (r *REPL) runTurn(
 	}
 }
 
-func NewREPL(reader *bufio.Reader, out io.Writer, engine *engine.AgentEngine, session *ctxpkg.Session, rep reporter.Reporter) *REPL {
+func NewREPL(reader *bufio.Reader, out io.Writer, rt Runtime, rep reporter.Reporter) *REPL {
 	return &REPL{
 		reader:   reader,
 		out:      out,
-		engine:   engine,
-		session:  session,
+		runtime:  rt,
 		reporter: rep,
 	}
 }

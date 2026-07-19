@@ -1,0 +1,104 @@
+{
+  "name": "Agent.Run",
+  "start_time": "2026-07-19T15:51:42.627865+08:00",
+  "end_time": "2026-07-19T15:52:03.961738+08:00",
+  "duration_ms": 21333,
+  "attributes": {
+    "SessionID": "terminal_default",
+    "WorkDir": "/Users/smsun/Documents/github/go-tiny-claw/workspace"
+  },
+  "children": [
+    {
+      "name": "Turn-1",
+      "start_time": "2026-07-19T15:51:42.628037+08:00",
+      "end_time": "2026-07-19T15:52:03.961737+08:00",
+      "duration_ms": 21333,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-07-19T15:51:42.628058+08:00",
+          "end_time": "2026-07-19T15:51:47.403645+08:00",
+          "duration_ms": 4775
+        }
+      ]
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-19T15:51:51.034062+08:00",
+      "end_time": "2026-07-19T15:51:51.05162+08:00",
+      "duration_ms": 17,
+      "attributes": {
+        "arguments": "{\"command\":\"find . -type f -not -path './.git/*' | head -100\"}",
+        "tool_name": "bash"
+      }
+    },
+    {
+      "name": "Turn-2",
+      "start_time": "2026-07-19T15:51:51.051735+08:00",
+      "end_time": "2026-07-19T15:52:03.961737+08:00",
+      "duration_ms": 12910,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-07-19T15:51:51.051774+08:00",
+          "end_time": "2026-07-19T15:51:55.743755+08:00",
+          "duration_ms": 4692
+        }
+      ]
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-19T15:51:55.743944+08:00",
+      "end_time": "2026-07-19T15:51:55.76328+08:00",
+      "duration_ms": 19,
+      "attributes": {
+        "arguments": "{\"command\":\"ls -la .claw/traces/\"}",
+        "tool_name": "bash"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-19T15:51:55.74396+08:00",
+      "end_time": "2026-07-19T15:51:55.745641+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"TODO.md\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-19T15:51:55.74399+08:00",
+      "end_time": "2026-07-19T15:51:55.745647+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"go.mod\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Tool.Execute",
+      "start_time": "2026-07-19T15:51:55.744266+08:00",
+      "end_time": "2026-07-19T15:51:55.745858+08:00",
+      "duration_ms": 1,
+      "attributes": {
+        "arguments": "{\"path\":\"PLAN.md\"}",
+        "tool_name": "read_file"
+      }
+    },
+    {
+      "name": "Turn-3",
+      "start_time": "2026-07-19T15:51:55.76336+08:00",
+      "end_time": "2026-07-19T15:52:03.961736+08:00",
+      "duration_ms": 8198,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-07-19T15:51:55.763375+08:00",
+          "end_time": "2026-07-19T15:52:03.961725+08:00",
+          "duration_ms": 8198
+        }
+      ]
+    }
+  ]
+}
