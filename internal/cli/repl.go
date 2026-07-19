@@ -12,6 +12,7 @@ import (
 
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
 	"github.com/Sun668/go-tiny-claw/internal/engine"
+	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -20,7 +21,7 @@ type REPL struct {
 	out      io.Writer
 	engine   *engine.AgentEngine
 	session  *ctxpkg.Session
-	reporter engine.Reporter
+	reporter reporter.Reporter
 }
 
 func (r *REPL) Run(ctx context.Context) error {
@@ -104,13 +105,13 @@ func (r *REPL) runTurn(
 	}
 }
 
-func NewREPL(reader *bufio.Reader, out io.Writer, engine *engine.AgentEngine, session *ctxpkg.Session, reporter engine.Reporter) *REPL {
+func NewREPL(reader *bufio.Reader, out io.Writer, engine *engine.AgentEngine, session *ctxpkg.Session, rep reporter.Reporter) *REPL {
 	return &REPL{
 		reader:   reader,
 		out:      out,
 		engine:   engine,
 		session:  session,
-		reporter: reporter,
+		reporter: rep,
 	}
 }
 

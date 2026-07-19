@@ -12,6 +12,7 @@ import (
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
 	"github.com/Sun668/go-tiny-claw/internal/engine"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
+	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	"github.com/Sun668/go-tiny-claw/internal/tools"
 )
 
@@ -39,10 +40,10 @@ func main() {
 	gate := approval.NewGate(approval.DefaultPolicy{}, handler, grantStore)
 
 	eng := engine.NewAgentEngine(llmProvider, registry, gate, false, false)
-	reporter := engine.NewTerminalReporter()
+	rep := reporter.NewTerminalReporter()
 	sess := ctxpkg.GlobalSessionMgr.GetOrCreate("terminal_default", workDir)
 
-	repl := cli.NewREPL(reader, os.Stdout, eng, sess, reporter)
+	repl := cli.NewREPL(reader, os.Stdout, eng, sess, rep)
 
 	if err := repl.Run(context.Background()); err != nil {
 		log.Fatalf("引擎崩溃: %v", err)

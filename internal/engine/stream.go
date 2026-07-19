@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Sun668/go-tiny-claw/internal/provider"
+	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -12,7 +13,7 @@ func (e *AgentEngine) generate(
 	ctx context.Context,
 	messages []schema.Message,
 	tools []schema.ToolDefinition,
-	reporter Reporter,
+	rep reporter.Reporter,
 	emitText bool,
 ) (*schema.Message, bool, error) {
 	streamProvider, ok := e.provider.(provider.StreamingProvider)
@@ -26,7 +27,7 @@ func (e *AgentEngine) generate(
 		return nil, false, err
 	}
 
-	streamReporter, canStream := reporter.(StreamReporter)
+	streamReporter, canStream := rep.(reporter.StreamReporter)
 	emittedText := false
 	var finalMessage *schema.Message
 

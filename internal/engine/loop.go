@@ -11,6 +11,7 @@ import (
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
 	"github.com/Sun668/go-tiny-claw/internal/observability"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
+	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 	"github.com/Sun668/go-tiny-claw/internal/tools"
 )
@@ -48,7 +49,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, approvalGate *appr
 
 // internal/engine/loop.go
 
-func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter Reporter) error {
+func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep reporter.Reporter) error {
 	log.Printf("[Engine] 唤醒会话 [%s]，工作区: %s\n", session.ID, session.WorkDir)
 
 	ctx, rootSpan := observability.StartSpan(ctx, "Agent.Run")
@@ -89,12 +90,16 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 		// ================= Phase 1: Thinking =================
 		if e.EnableThinking {
-			if reporter != nil {
-				reporter.OnThinking(ctx)
+			if rep != nil {
+				rep.OnThinking(ctx)
 			}
 
 			thinkCtx, thinkSpan := observability.StartSpan(turnCtx, "LLM.Thinking")
-			thinkResp, err := e.provider.Generate(thinkCtx, compactedContext, nil)
+			thinkResp, streamed, err := e.generate(thinkCtx, compactedContext, nil, rep, true)
+			// 汇报给用户
+			if thinkResp.Content != "" && rep != nil && !streamed {
+				rep.OnMessage(ctx, thinkResp.Content)
+			}
 			thinkSpan.EndSpan() // 结束思考跨度
 
 			if err != nil {
@@ -112,7 +117,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 
 		// ================= Phase 2: Action =================
 		actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
-		actionResp, streamed, err := e.generate(actCtx, compactedContext, availableTools, reporter, true)
+		actionResp, streamed, err := e.generate(actCtx, compactedContext, availableTools, rep, true)
 		actSpan.EndSpan() // 结束行动跨度
 
 		if err != nil {
@@ -131,8 +136,8 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 		session.Append(finalAssistantMsg)
 
 		// 汇报给用户
-		if actionResp.Content != "" && reporter != nil && !streamed {
-			reporter.OnMessage(ctx, actionResp.Content)
+		if actionResp.Content != "" && rep != nil && !streamed {
+			rep.OnMessage(ctx, actionResp.Content)
 		}
 
 		// 如果没有工具调用，结束本轮对话
@@ -176,8 +181,8 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 			wg.Add(1)
 			go func(item IndexedToolCall) {
 				defer wg.Done()
-				if reporter != nil {
-					reporter.OnToolCall(ctx, item.call.Name, string(item.call.Arguments))
+				if rep != nil {
+					rep.OnToolCall(ctx, item.call.Name, string(item.call.Arguments))
 				}
 
 				result := e.registry.Execute(ctx, item.call)
@@ -190,12 +195,12 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 					log.Printf(" -> [Go-%d] ✅ 工具执行成功 (返回 %d 字节)\n", item.index, len(result.Output))
 				}
 
-				if reporter != nil {
+				if rep != nil {
 					displayOutput := result.Output
 					if len(displayOutput) > 200 {
 						displayOutput = displayOutput[:200] + "... (已截断)"
 					}
-					reporter.OnToolResult(ctx, item.call.Name, displayOutput, result.IsError)
+					rep.OnToolResult(ctx, item.call.Name, displayOutput, result.IsError)
 				}
 
 				observationMsgs[item.index] = schema.Message{
@@ -232,7 +237,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter
 // RunSub 是专为 Subagent 拉起的一次性受限循环。
 // 它不依赖外部 Session，打完就跑。
 // Reporter：为了让用户在终端看到子智能体的工作轨迹，我们将主线程的 Reporter 透传进来，并打上特殊标记。
-func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyRegistry tools.Registry, reporter any) (string, error) {
+func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyRegistry tools.Registry, rep reporter.Reporter) (string, error) {
 
 	// 【核心优化】：子智能体极其容易偷懒。我们必须在 System Prompt 中严厉警告它必须使用工具！
 	contextHistory := []schema.Message{
@@ -268,9 +273,13 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 		compactedContext := e.compactor.Compact(contextHistory)
 
 		// 子任务要求急速响应，强制关闭主体的慢思考，直接预测行动
-		actionResp, err := e.provider.Generate(ctx, compactedContext, availableTools)
+		actionResp, streamed, err := e.generate(ctx, compactedContext, availableTools, rep, false)
 		if err != nil {
 			return "", fmt.Errorf("子智能体推理失败: %w", err)
+		}
+
+		if actionResp.Content != "" && rep != nil && !streamed {
+			rep.OnMessage(ctx, actionResp.Content)
 		}
 
 		contextHistory = append(contextHistory, *actionResp)
@@ -291,9 +300,9 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 				defer wg.Done()
 
 				// 【可视化的关键】：让终端用户看到 Subagent 正在干嘛
-				var r Reporter
-				if reporter != nil {
-					r = reporter.(Reporter)
+				var r reporter.Reporter
+				if rep != nil {
+					r = rep.(reporter.Reporter)
 					r.OnToolCall(ctx, fmt.Sprintf("[Subagent] %s", call.Name), string(call.Arguments))
 				}
 
@@ -304,7 +313,7 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 					finalOutput = e.recovery.AnalyzeAndInject(call.Name, result.Output)
 				}
 
-				if reporter != nil {
+				if rep != nil {
 					display := finalOutput
 					if len(display) > 200 {
 						display = display[:200] + "... (已截断)"
