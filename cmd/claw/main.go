@@ -6,15 +6,11 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/signal"
 
-	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/cli"
-	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
-	"github.com/Sun668/go-tiny-claw/internal/engine"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
-	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	runtime "github.com/Sun668/go-tiny-claw/internal/runtime"
-	"github.com/Sun668/go-tiny-claw/internal/tools"
 )
 
 func main() {
@@ -26,26 +22,35 @@ func main() {
 	workDir += "/workspace"
 	llmProvider := provider.NewOpenAICompatibleProvider("glm-5-2-260617")
 
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewBashTool(workDir))
-	registry.Register(tools.NewWriteFileTool(workDir))
-	registry.Register(tools.NewReadFileTool(workDir))
-	registry.Register(tools.NewEditFileTool(workDir))
-
 	reader := bufio.NewReader(os.Stdin)
 
-	handler := approval.NewTerminalApprovalHandler(reader, os.Stdout)
+	factory := runtime.NewRuntimeFactory(llmProvider, workDir, nil)
 
-	grantStore := approval.NewMemoryGrantStore()
+	manager := runtime.NewManagerWithFactory(factory)
 
-	gate := approval.NewGate(approval.DefaultPolicy{}, handler, grantStore)
+	runtimeBundle, err := manager.Create("terminal_default", reader, os.Stdout)
 
-	eng := engine.NewAgentEngine(llmProvider, registry, gate, false, false)
-	rep := reporter.NewTerminalReporter()
-	sess := ctxpkg.GlobalSessionMgr.GetOrCreate("terminal_default", workDir)
-	rt := runtime.NewRuntime(eng, sess)
+	if err != nil {
+		log.Fatalf("创建 Runtime 失败: %v", err)
+	}
 
-	repl := cli.NewREPL(reader, os.Stdout, rt, rep)
+	defer func() {
+		if err := manager.Destroy("terminal_default"); err != nil {
+			log.Printf("销毁 Runtime 失败: %v", err)
+		}
+	}()
+
+	repl := cli.NewREPL(reader, os.Stdout, runtimeBundle.Runtime, runtimeBundle.Reporter)
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	defer signal.Stop(signals)
+
+	go func() {
+		for range signals {
+			repl.Interrupt()
+		}
+	}()
 
 	if err := repl.Run(context.Background()); err != nil {
 		log.Fatalf("引擎崩溃: %v", err)

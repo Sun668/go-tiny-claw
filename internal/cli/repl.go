@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
 	"strings"
+	"sync"
 
 	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	runtime "github.com/Sun668/go-tiny-claw/internal/runtime"
@@ -16,7 +15,7 @@ import (
 
 type Runtime interface {
 	Start(parent context.Context, prompt string, reporter reporter.Reporter) (*runtime.Task, error)
-	Clear()
+	Clear() error
 }
 
 type REPL struct {
@@ -24,14 +23,16 @@ type REPL struct {
 	out      io.Writer
 	runtime  Runtime
 	reporter reporter.Reporter
+
+	mu     sync.Mutex
+	active *runtime.Task
 }
 
 func (r *REPL) Run(ctx context.Context) error {
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt)
-	defer signal.Stop(signals)
-
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		fmt.Fprint(r.out, "\nclaw>")
 
 		line, err := r.reader.ReadString('\n')
@@ -53,7 +54,10 @@ func (r *REPL) Run(ctx context.Context) error {
 		case "/exit", "/quit":
 			return nil
 		case "/clear":
-			r.runtime.Clear()
+			if err := r.runtime.Clear(); err != nil {
+				fmt.Fprintln(r.out, err)
+				continue
+			}
 			fmt.Fprintln(r.out, "会话已清空。")
 			continue
 		case "/help":
@@ -61,38 +65,51 @@ func (r *REPL) Run(ctx context.Context) error {
 			continue
 		}
 
-		if err := r.runTurn(ctx, prompt, signals); err != nil {
+		if err := r.runTurn(ctx, prompt); err != nil {
 			fmt.Fprintf(r.out, "引擎运行出错: %v\n", err)
 		}
 	}
 }
 
-func (r *REPL) runTurn(
-	parent context.Context,
-	prompt string,
-	signals <-chan os.Signal,
-) error {
+func (r *REPL) runTurn(parent context.Context, prompt string) error {
 	task, err := r.runtime.Start(parent, prompt, r.reporter)
 	if err != nil {
 		return err
 	}
 
-	select {
-	case <-task.Done():
-		return task.Err()
+	r.mu.Lock()
+	r.active = task
+	r.mu.Unlock()
 
-	case <-signals:
-		fmt.Fprintln(r.out, "\n正在取消当前任务...")
-		task.Cancel()
-
-		err := task.Wait()
-		if errors.Is(err, context.Canceled) {
-			fmt.Fprintln(r.out, "当前任务已取消。")
-			return nil
+	defer func() {
+		r.mu.Lock()
+		if r.active == task {
+			r.active = nil
 		}
+		r.mu.Unlock()
+	}()
 
-		return err
+	err = task.Wait()
+
+	if errors.Is(err, context.Canceled) {
+		fmt.Fprintln(r.out, "任务已取消。")
+		return nil
 	}
+
+	return err
+}
+
+func (r *REPL) Interrupt() {
+	r.mu.Lock()
+	task := r.active
+	r.mu.Unlock()
+
+	if task == nil {
+		return
+	}
+
+	fmt.Fprintln(r.out, "\n正在取消当前任务...")
+	task.Cancel()
 }
 
 func NewREPL(reader *bufio.Reader, out io.Writer, rt Runtime, rep reporter.Reporter) *REPL {
