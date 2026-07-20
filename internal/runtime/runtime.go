@@ -31,7 +31,7 @@ func (r *Runtime) Run(ctx context.Context, prompt string, rep reporter.Reporter)
 	if err != nil {
 		return err
 	}
-	return <-task.Done()
+	return task.Wait()
 }
 
 func (r *Runtime) Start(parent context.Context, prompt string, rep reporter.Reporter) (*Task, error) {
@@ -46,17 +46,15 @@ func (r *Runtime) Start(parent context.Context, prompt string, rep reporter.Repo
 	})
 
 	runCtx, cancel := context.WithCancel(parent)
-	done := make(chan error, 1)
+
+	task := newTask(cancel)
 
 	go func() {
-		defer close(done)
-		done <- r.runner.Run(runCtx, r.session, rep)
+		err := r.runner.Run(runCtx, r.session, rep)
+		task.finish(err)
 	}()
 
-	return &Task{
-		done:   done,
-		cancel: cancel,
-	}, nil
+	return task, nil
 }
 
 func (r *Runtime) Clear() {

@@ -78,14 +78,14 @@ func (r *REPL) runTurn(
 	}
 
 	select {
-	case err := <-task.Done():
-		return err
+	case <-task.Done():
+		return task.Err()
 
 	case <-signals:
 		fmt.Fprintln(r.out, "\n正在取消当前任务...")
 		task.Cancel()
 
-		err := <-task.Done()
+		err := task.Wait()
 		if errors.Is(err, context.Canceled) {
 			fmt.Fprintln(r.out, "当前任务已取消。")
 			return nil

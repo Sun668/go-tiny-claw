@@ -1,0 +1,26 @@
+{
+  "name": "Agent.Run",
+  "start_time": "2026-07-20T13:47:25.690688+08:00",
+  "end_time": "2026-07-20T13:47:35.155383+08:00",
+  "duration_ms": 9464,
+  "attributes": {
+    "SessionID": "terminal_default",
+    "WorkDir": "/Users/smsun/Documents/github/go-tiny-claw/workspace"
+  },
+  "children": [
+    {
+      "name": "Turn-1",
+      "start_time": "2026-07-20T13:47:25.690794+08:00",
+      "end_time": "2026-07-20T13:47:35.155383+08:00",
+      "duration_ms": 9464,
+      "children": [
+        {
+          "name": "LLM.Action",
+          "start_time": "2026-07-20T13:47:25.690859+08:00",
+          "end_time": "2026-07-20T13:47:35.155374+08:00",
+          "duration_ms": 9464
+        }
+      ]
+    }
+  ]
+}
