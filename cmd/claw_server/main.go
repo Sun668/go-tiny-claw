@@ -21,6 +21,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("获取工作目录失败: %v", err)
 	}
+	workDir += "/workspace"
 
 	llmProvider := provider.NewOpenAICompatibleProvider(
 		"glm-5-2-260617",
@@ -50,12 +51,22 @@ func main() {
 	)
 	defer stop()
 
-	log.Println("TCP Terminal Server 监听在 :8080")
+	log.Println("TCP Server 监听在 :8080")
 
 	tcpServer := server.NewTCPServer(
 		listener,
 		manager,
 	)
+
+	webSocketServer := server.NewWebSocketServer(manager)
+	go func() {
+		if err := webSocketServer.Serve(ctx, ":8081"); err != nil {
+			log.Printf("WebSocket Server 运行失败: %v", err)
+		}
+	}()
+	defer webSocketServer.Close()
+
+	log.Println("WebSocket Server 监听在 :8081，路径为 /ws")
 
 	if err := tcpServer.Serve(ctx); err != nil {
 		log.Fatalf("TCP Server 运行失败: %v", err)

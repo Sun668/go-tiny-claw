@@ -1,22 +1,27 @@
 package channel
 
 import (
-	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
-	"github.com/Sun668/go-tiny-claw/internal/cli"
+	"github.com/Sun668/go-tiny-claw/internal/approval"
+	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	runtimepkg "github.com/Sun668/go-tiny-claw/internal/runtime"
 )
 
 type ChannelSession struct {
-	id      string
-	conn    io.ReadWriteCloser
-	manager *runtimepkg.Manager
-	runtime *runtimepkg.Runtime
-	repl    *cli.REPL
+	id       string
+	conn     io.ReadWriteCloser
+	manager  *runtimepkg.Manager
+	runtime  *runtimepkg.Runtime
+	reader   *MessageReader
+	writer   *MessageWriter
+	reporter reporter.Reporter
+	events   reporter.EventSink
+	approval *ChannelApprovalHandler
 
 	closeOnce sync.Once
 	closeErr  error
@@ -24,29 +29,52 @@ type ChannelSession struct {
 
 func NewChannelSession(id string, conn io.ReadWriteCloser, manager *runtimepkg.Manager) (*ChannelSession, error) {
 	if conn == nil {
-		return nil, errors.New("Terminal 连接不能为空")
+		return nil, errors.New("通道连接不能为空")
 	}
 
 	if manager == nil {
 		return nil, errors.New("RuntimeManager 不能为空")
 	}
 
-	reader := bufio.NewReader(conn)
+	reader, err := NewMessageReader(conn)
+	if err != nil {
+		return nil, err
+	}
 
-	bundle, err := manager.Create(id, reader, conn)
+	writer, err := NewMessageWriter(conn)
+	if err != nil {
+		return nil, err
+	}
+
+	eventSink, err := NewJSONEventSinkWithWriter(writer)
+	if err != nil {
+		return nil, err
+	}
+
+	channelApproval, err := NewChannelApprovalHandler(eventSink)
+	if err != nil {
+		return nil, err
+	}
+
+	bundle, err := manager.Create(id, runtimepkg.RuntimeOptions{
+		ApprovalHandler: channelApproval,
+		Reporter:        reporter.NewJSONReporter(eventSink),
+	})
 
 	if err != nil {
 		return nil, err
 	}
 
-	repl := cli.NewREPL(reader, conn, bundle.Runtime, bundle.Reporter)
-
 	return &ChannelSession{
-		id:      id,
-		conn:    conn,
-		manager: manager,
-		runtime: bundle.Runtime,
-		repl:    repl,
+		id:       id,
+		conn:     conn,
+		manager:  manager,
+		runtime:  bundle.Runtime,
+		reader:   reader,
+		writer:   writer,
+		reporter: bundle.Reporter,
+		events:   eventSink,
+		approval: channelApproval,
 	}, nil
 }
 
@@ -58,12 +86,84 @@ func (s *ChannelSession) Runtime() *runtimepkg.Runtime {
 	return s.runtime
 }
 
-func (t *ChannelSession) Run(ctx context.Context) error {
-	return t.repl.Run(ctx)
+func (s *ChannelSession) Run(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		message, err := s.reader.Read()
+		if err != nil {
+			return err
+		}
+
+		switch message.Type {
+		case MessagePrompt:
+			if err := s.startTask(ctx, message.Content); err != nil {
+				s.publishError(ctx, err)
+			}
+		case MessageInterrupt:
+			s.runtime.Cancel()
+		case MessageApprovalResponse:
+			decision := approval.Decision(message.Decision)
+			if err := s.approval.Respond(message.RequestID, decision); err != nil {
+				s.publishError(ctx, err)
+			}
+		case MessagePing:
+			if err := s.writer.Write(Message{Type: MessagePong}); err != nil {
+				return err
+			}
+		case MessageClose:
+			return nil
+		default:
+			return fmt.Errorf("不支持的消息类型: %s", message.Type)
+		}
+	}
 }
 
-func (t *ChannelSession) Interrupt() {
-	t.repl.Interrupt()
+func (s *ChannelSession) startTask(ctx context.Context, prompt string) error {
+	if s.runtime.IsRunning() {
+		return runtimepkg.ErrTaskRunning
+	}
+
+	task, err := s.runtime.Start(ctx, prompt, s.reporter)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		err := task.Wait()
+		event := reporter.Event{Type: reporter.EventTaskCompleted}
+
+		switch {
+		case errors.Is(err, context.Canceled):
+			event.Type = reporter.EventTaskCanceled
+		case err != nil:
+			event.Type = reporter.EventTaskFailed
+			event.Error = err.Error()
+			event.IsError = true
+		}
+
+		_ = s.events.Publish(context.Background(), event)
+	}()
+
+	return err
+}
+
+func (s *ChannelSession) publishError(ctx context.Context, err error) {
+	if err == nil {
+		return
+	}
+
+	_ = s.events.Publish(ctx, reporter.Event{
+		Type:    reporter.EventError,
+		Error:   err.Error(),
+		IsError: true,
+	})
+}
+
+func (s *ChannelSession) Interrupt() {
+	s.runtime.Cancel()
 }
 
 func (s *ChannelSession) Close() error {

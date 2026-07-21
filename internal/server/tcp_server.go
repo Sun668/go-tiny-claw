@@ -100,7 +100,7 @@ func (s *TCPServer) handleConnection(
 	err = channelSession.Run(parent)
 	if err != nil && err != io.EOF {
 		log.Printf(
-			"Terminal [%s] 运行失败: %v",
+			"Channel [%s] 运行失败: %v",
 			sessionID,
 			err,
 		)

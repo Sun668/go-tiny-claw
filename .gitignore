@@ -1,2 +1,7 @@
 .env
 .DS_Store
+web-console/node_modules/
+web-console/dist/
+web-console/*.tsbuildinfo
+web-console/vite.config.js
+web-console/vite.config.d.ts

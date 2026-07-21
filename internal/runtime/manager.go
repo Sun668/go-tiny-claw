@@ -1,9 +1,7 @@
 package runtime
 
 import (
-	"bufio"
 	"errors"
-	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -35,7 +33,7 @@ func NewManagerWithFactory(factory *RuntimeFactory) *Manager {
 	return manager
 }
 
-func (m *Manager) Create(sessionID string, reader *bufio.Reader, out io.Writer) (*RuntimeBundle, error) {
+func (m *Manager) Create(sessionID string, options RuntimeOptions) (*RuntimeBundle, error) {
 	if m.factory == nil {
 		return nil, ErrFactoryNotConfigured
 	}
@@ -68,7 +66,7 @@ func (m *Manager) Create(sessionID string, reader *bufio.Reader, out io.Writer) 
 		m.mu.Unlock()
 	}()
 
-	bundle, err := m.factory.NewTerminalRuntime(sessionID, reader, out)
+	bundle, err := m.factory.NewRuntime(sessionID, options)
 
 	if err != nil {
 		return nil, err

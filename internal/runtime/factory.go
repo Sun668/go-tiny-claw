@@ -37,43 +37,54 @@ func NewRuntimeFactory(provider provider.LLMProvider, workDir string, sessionMan
 	}
 }
 
-func (f *RuntimeFactory) NewTerminalRuntime(sessionID string, reader *bufio.Reader, out io.Writer) (*RuntimeBundle, error) {
+func (f *RuntimeFactory) NewRuntime(sessionID string, options RuntimeOptions) (*RuntimeBundle, error) {
 	if strings.TrimSpace(sessionID) == "" {
-		return nil, errors.New("SessionID can not be empty")
-	}
-
-	if reader == nil {
-		return nil, errors.New("Reader can not be nil")
-	}
-
-	if out == nil {
-		return nil, errors.New("Output writer can not be nil")
+		return nil, errors.New("会话 ID 不能为空")
 	}
 
 	if f.provider == nil {
 		return nil, errors.New("LLM Provider 不能为空")
 	}
 
+	if err := options.validate(); err != nil {
+		return nil, err
+	}
+
 	session := f.sessions.GetOrCreate(sessionID, f.workDir)
 
 	registry := f.newToolRegistry()
 
-	approvalHandler := approval.NewTerminalApprovalHandler(reader, out)
-
 	grantStore := approval.NewMemoryGrantStore()
 
-	approvalGate := approval.NewGate(approval.DefaultPolicy{}, approvalHandler, grantStore)
+	approvalGate := approval.NewGate(
+		approval.DefaultPolicy{},
+		options.ApprovalHandler,
+		grantStore,
+	)
 
 	agentEngine := engine.NewAgentEngine(f.provider, registry, approvalGate, false, false)
 
 	agentRuntime := NewRuntime(agentEngine, session)
 
-	terminalReporter := reporter.NewTerminalReporter(out)
-
 	return &RuntimeBundle{
 		Runtime:  agentRuntime,
-		Reporter: terminalReporter,
+		Reporter: options.Reporter,
 	}, nil
+}
+
+func (f *RuntimeFactory) NewTerminalRuntime(sessionID string, reader *bufio.Reader, out io.Writer) (*RuntimeBundle, error) {
+	if reader == nil {
+		return nil, errors.New("终端读取器不能为空")
+	}
+
+	if out == nil {
+		return nil, errors.New("终端输出不能为空")
+	}
+
+	return f.NewRuntime(sessionID, RuntimeOptions{
+		ApprovalHandler: approval.NewTerminalApprovalHandler(reader, out),
+		Reporter:        reporter.NewTerminalReporter(out),
+	})
 }
 
 func (f *RuntimeFactory) newToolRegistry() tools.Registry {

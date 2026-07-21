@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/cli"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
+	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	runtime "github.com/Sun668/go-tiny-claw/internal/runtime"
 )
 
@@ -28,7 +30,13 @@ func main() {
 
 	manager := runtime.NewManagerWithFactory(factory)
 
-	runtimeBundle, err := manager.Create("terminal_default", reader, os.Stdout)
+	runtimeBundle, err := manager.Create(
+		"terminal_default",
+		runtime.RuntimeOptions{
+			ApprovalHandler: approval.NewTerminalApprovalHandler(reader, os.Stdout),
+			Reporter:        reporter.NewTerminalReporter(os.Stdout),
+		},
+	)
 
 	if err != nil {
 		log.Fatalf("创建 Runtime 失败: %v", err)

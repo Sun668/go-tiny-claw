@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
+	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	runtimepkg "github.com/Sun668/go-tiny-claw/internal/runtime"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
@@ -107,8 +109,13 @@ func TestManagerCreatesAndDestroysRuntime(t *testing.T) {
 
 	bundle, err := manager.Create(
 		"managed-terminal",
-		bufio.NewReader(strings.NewReader("")),
-		&bytes.Buffer{},
+		runtimepkg.RuntimeOptions{
+			ApprovalHandler: approval.NewTerminalApprovalHandler(
+				bufio.NewReader(strings.NewReader("")),
+				&bytes.Buffer{},
+			),
+			Reporter: reporter.NewTerminalReporter(&bytes.Buffer{}),
+		},
 	)
 	if err != nil {
 		t.Fatalf("Manager 创建 Runtime 失败: %v", err)
