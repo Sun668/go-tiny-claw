@@ -14,8 +14,24 @@ const (
 	TaskRunning   TaskStatus = "running"
 	TaskCompleted TaskStatus = "completed"
 	TaskCanceled  TaskStatus = "canceled"
+	TaskTimedOut  TaskStatus = "timed_out"
 	TaskFailed    TaskStatus = "failed"
 )
+
+// StatusFromError 将 Runner 返回的 error 映射为唯一终态语义。
+// nil → completed；Canceled → canceled；DeadlineExceeded → timed_out；其他 → failed。
+func StatusFromError(err error) TaskStatus {
+	switch {
+	case err == nil:
+		return TaskCompleted
+	case errors.Is(err, context.Canceled):
+		return TaskCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return TaskTimedOut
+	default:
+		return TaskFailed
+	}
+}
 
 type Task struct {
 	id     string
@@ -86,15 +102,7 @@ func (t *Task) finish(err error) {
 	}
 
 	t.err = err
-
-	switch {
-	case err == nil:
-		t.status = TaskCompleted
-	case errors.Is(err, context.Canceled):
-		t.status = TaskCanceled
-	default:
-		t.status = TaskFailed
-	}
+	t.status = StatusFromError(err)
 
 	close(t.done)
 }

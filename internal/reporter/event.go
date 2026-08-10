@@ -12,6 +12,7 @@ const (
 	EventToolResult      EventType = "tool_result"
 	EventTaskCompleted   EventType = "task_completed"
 	EventTaskCanceled    EventType = "task_canceled"
+	EventTaskTimedOut    EventType = "task_timed_out"
 	EventTaskFailed      EventType = "task_failed"
 	EventError           EventType = "error"
 	EventPong            EventType = "pong"

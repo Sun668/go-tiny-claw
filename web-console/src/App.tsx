@@ -143,6 +143,10 @@ function App() {
         appendItem(id, { id: itemId(), kind: 'system', content: '任务已取消' })
         updateSession(id, (session) => ({ ...session, status: 'ready', streamItemId: undefined }))
         return
+      case 'task_timed_out':
+        appendItem(id, { id: itemId(), kind: 'system', content: event.error ?? '任务超时' })
+        updateSession(id, (session) => ({ ...session, status: 'ready', streamItemId: undefined }))
+        return
       case 'task_failed':
       case 'error':
         appendItem(id, { id: itemId(), kind: 'error', content: event.error ?? '任务执行失败' })

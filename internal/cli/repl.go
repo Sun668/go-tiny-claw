@@ -91,12 +91,16 @@ func (r *REPL) runTurn(parent context.Context, prompt string) error {
 
 	err = task.Wait()
 
-	if errors.Is(err, context.Canceled) {
+	switch task.Status() {
+	case runtime.TaskCanceled:
 		fmt.Fprintln(r.out, "任务已取消。")
 		return nil
+	case runtime.TaskTimedOut:
+		fmt.Fprintln(r.out, "任务超时。")
+		return nil
+	default:
+		return err
 	}
-
-	return err
 }
 
 func (r *REPL) Interrupt() {

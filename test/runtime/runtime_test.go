@@ -116,6 +116,52 @@ func TestRuntimeTaskCanceled(t *testing.T) {
 	}
 }
 
+func TestRuntimeTaskTimedOut(t *testing.T) {
+	rt := newTestRuntime(&fakeRunner{
+		run: func(
+			context.Context,
+			*ctxpkg.Session,
+			reporter.Reporter,
+		) error {
+			return context.DeadlineExceeded
+		},
+	})
+
+	task, err := rt.Start(context.Background(), "超时任务", nil)
+	if err != nil {
+		t.Fatalf("启动任务失败: %v", err)
+	}
+
+	if err := task.Wait(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("期望 context.DeadlineExceeded，实际错误: %v", err)
+	}
+
+	if task.Status() != runtimepkg.TaskTimedOut {
+		t.Fatalf("期望状态 %s，实际状态 %s", runtimepkg.TaskTimedOut, task.Status())
+	}
+}
+
+func TestStatusFromError(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		status runtimepkg.TaskStatus
+	}{
+		{name: "完成", err: nil, status: runtimepkg.TaskCompleted},
+		{name: "取消", err: context.Canceled, status: runtimepkg.TaskCanceled},
+		{name: "超时", err: context.DeadlineExceeded, status: runtimepkg.TaskTimedOut},
+		{name: "失败", err: errors.New("执行失败"), status: runtimepkg.TaskFailed},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runtimepkg.StatusFromError(tc.err); got != tc.status {
+				t.Fatalf("期望状态 %s，实际状态 %s", tc.status, got)
+			}
+		})
+	}
+}
+
 func TestRuntimeCancelActiveTask(t *testing.T) {
 	started := make(chan struct{})
 

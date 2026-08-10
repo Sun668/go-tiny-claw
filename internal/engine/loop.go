@@ -205,17 +205,26 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 
 				observationMsgs[item.index] = schema.Message{
 					Role:       schema.RoleUser,
-					Content:    result.Output,
+					Content:    finalOutput,
 					ToolCallID: item.call.ID,
 				}
 
-				toolResults[item.index] = result
+				toolResults[item.index] = schema.ToolResult{
+					ToolCallID: result.ToolCallID,
+					Output:     finalOutput,
+					IsError:    result.IsError,
+				}
 			}(item)
 		}
 
 		wg.Wait()
 
-		// 工具执行结果作为 RoleUser 消息存入，保证了下一轮循环时 Role 必然是 User -> Assistant 交替
+		// 用户取消或 Run 级超时：不把未确认的工具结果写入 Session
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		// 工具级超时/失败：作为 Observation 写入，Run 继续
 		session.Append(observationMsgs...)
 
 		for i, result := range toolResults {
@@ -330,6 +339,9 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 		}
 
 		wg.Wait()
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		contextHistory = append(contextHistory, observationMsgs...)
 	}
 }

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
@@ -90,9 +91,24 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 	output, err := tool.Execute(ctx, call.Arguments)
 
 	if err != nil {
+		// 父 ctx 取消 / Run 超时：保留中断语义，Engine 会检查 ctx 后中止，不把半截结果当成功 Observation。
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return schema.ToolResult{
+				ToolCallID: call.ID,
+				Output:     "工具执行已中断",
+				IsError:    true,
+			}
+		}
+
+		// 工具级失败（含 ErrToolTimeout）：优先使用工具返回的文案写入 Observation。
+		msg := output
+		if msg == "" {
+			msg = fmt.Sprintf("执行工具 %s 失败: %v", call.Name, err)
+		}
+
 		return schema.ToolResult{
 			ToolCallID: call.ID,
-			Output:     fmt.Sprintf("Error executing %s: %v", call.Name, err),
+			Output:     msg,
 			IsError:    true,
 		}
 	}

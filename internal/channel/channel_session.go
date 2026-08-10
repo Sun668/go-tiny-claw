@@ -133,14 +133,32 @@ func (s *ChannelSession) startTask(ctx context.Context, prompt string) error {
 
 	go func() {
 		err := task.Wait()
-		event := reporter.Event{Type: reporter.EventTaskCompleted}
+		event := reporter.Event{}
 
-		switch {
-		case errors.Is(err, context.Canceled):
+		switch task.Status() {
+		case runtimepkg.TaskCompleted:
+			event.Type = reporter.EventTaskCompleted
+		case runtimepkg.TaskCanceled:
 			event.Type = reporter.EventTaskCanceled
-		case err != nil:
+		case runtimepkg.TaskTimedOut:
+			event.Type = reporter.EventTaskTimedOut
+			if err != nil {
+				event.Error = err.Error()
+				event.IsError = true
+			}
+		case runtimepkg.TaskFailed:
 			event.Type = reporter.EventTaskFailed
-			event.Error = err.Error()
+			if err != nil {
+				event.Error = err.Error()
+				event.IsError = true
+			}
+		default:
+			event.Type = reporter.EventTaskFailed
+			if err != nil {
+				event.Error = err.Error()
+			} else {
+				event.Error = "任务结束状态未知"
+			}
 			event.IsError = true
 		}
 
