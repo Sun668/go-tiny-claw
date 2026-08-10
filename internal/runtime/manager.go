@@ -20,17 +20,12 @@ type Manager struct {
 	creating map[string]struct{}
 }
 
-func NewManager() *Manager {
+func NewManagerWithFactory(factory *RuntimeFactory) *Manager {
 	return &Manager{
+		factory:  factory,
 		runtimes: make(map[string]*Runtime),
 		creating: make(map[string]struct{}),
 	}
-}
-
-func NewManagerWithFactory(factory *RuntimeFactory) *Manager {
-	manager := NewManager()
-	manager.factory = factory
-	return manager
 }
 
 func (m *Manager) Create(sessionID string, options RuntimeOptions) (*RuntimeBundle, error) {

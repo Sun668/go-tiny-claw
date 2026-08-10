@@ -29,7 +29,7 @@ func newManagerTestRuntime(sessionID string) *runtimepkg.Runtime {
 }
 
 func TestManagerAddGetRemove(t *testing.T) {
-	manager := runtimepkg.NewManager()
+	manager := runtimepkg.NewManagerWithFactory(nil)
 	rt := newManagerTestRuntime("session-a")
 
 	if err := manager.Add("session-a", rt); err != nil {
@@ -55,7 +55,7 @@ func TestManagerAddGetRemove(t *testing.T) {
 }
 
 func TestManagerRejectsDuplicateRuntime(t *testing.T) {
-	manager := runtimepkg.NewManager()
+	manager := runtimepkg.NewManagerWithFactory(nil)
 
 	if err := manager.Add(
 		"session-a",
@@ -73,7 +73,7 @@ func TestManagerRejectsDuplicateRuntime(t *testing.T) {
 }
 
 func TestManagerListAndCount(t *testing.T) {
-	manager := runtimepkg.NewManager()
+	manager := runtimepkg.NewManagerWithFactory(nil)
 
 	for _, sessionID := range []string{"session-c", "session-a", "session-b"} {
 		if err := manager.Add(sessionID, newManagerTestRuntime(sessionID)); err != nil {
@@ -94,7 +94,7 @@ func TestManagerListAndCount(t *testing.T) {
 }
 
 func TestManagerSupportsConcurrentDifferentRuntimes(t *testing.T) {
-	manager := runtimepkg.NewManager()
+	manager := runtimepkg.NewManagerWithFactory(nil)
 	const runtimeCount = 32
 
 	var wg sync.WaitGroup
