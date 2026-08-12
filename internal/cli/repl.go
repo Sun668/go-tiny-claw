@@ -51,6 +51,12 @@ func (r *REPL) Run(ctx context.Context) error {
 
 		prompt := strings.TrimSpace(line)
 
+		// 退出优先：任务进行中或审批等待时也可以结束进程
+		if prompt == "/exit" || prompt == "/quit" {
+			r.Interrupt()
+			return nil
+		}
+
 		if r.approval != nil && r.approval.HasPending() {
 			decision, ok := parseApprovalDecision(prompt)
 			if !ok {
@@ -73,8 +79,6 @@ func (r *REPL) Run(ctx context.Context) error {
 		}
 
 		switch prompt {
-		case "/exit", "/quit":
-			return nil
 		case "/clear":
 			if err := r.runtime.Clear(); err != nil {
 				fmt.Fprintln(r.out, err)
@@ -121,10 +125,13 @@ func (r *REPL) runTurn(parent context.Context, prompt string) error {
 			}
 		}
 
+		// 主循环可能正堵在 ReadString；任务结束后补打提示符
+		if r.isIdle() && (r.approval == nil || !r.approval.HasPending()) {
+			fmt.Fprint(r.out, "\nclaw>")
+		}
 	}()
 
 	return nil
-
 }
 
 func (r *REPL) Interrupt() {

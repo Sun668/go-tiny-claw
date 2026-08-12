@@ -162,6 +162,13 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 				decision, err := e.approvalGate.Check(ctx, req)
 
 				if err != nil {
+					// Assistant 已带 ToolCalls 入库；必须补齐 Observation，避免下一轮上下文断裂
+					EnsureToolObservations(
+						actionResp.ToolCalls,
+						observationMsgs,
+						"工具调用已取消",
+					)
+					session.Append(observationMsgs...)
 					return false, fmt.Errorf("审批请求失败: %w", err)
 				}
 
@@ -220,8 +227,14 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 
 			wg.Wait()
 
-			// 用户取消或 Run 级超时：不把未确认的工具结果写入 Session
+			// 用户取消或 Run 级超时：保留已完成结果，未完成的补取消 Observation，保持 ToolCall 成对
 			if err := ctx.Err(); err != nil {
+				EnsureToolObservations(
+					actionResp.ToolCalls,
+					observationMsgs,
+					"工具调用已取消",
+				)
+				session.Append(observationMsgs...)
 				return false, err
 			}
 
@@ -353,5 +366,27 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 			return "", err
 		}
 		contextHistory = append(contextHistory, observationMsgs...)
+	}
+}
+
+// EnsureToolObservations 为尚未写入的 ToolCall 补齐 Observation。
+// 用于取消/中断路径：Assistant 消息若已带 ToolCalls 入库，必须成对补全，避免下一轮上下文断裂。
+func EnsureToolObservations(
+	toolCalls []schema.ToolCall,
+	observationMsgs []schema.Message,
+	content string,
+) {
+	for i, toolCall := range toolCalls {
+		if i >= len(observationMsgs) {
+			return
+		}
+		if observationMsgs[i].ToolCallID != "" {
+			continue
+		}
+		observationMsgs[i] = schema.Message{
+			Role:       schema.RoleUser,
+			Content:    content,
+			ToolCallID: toolCall.ID,
+		}
 	}
 }
