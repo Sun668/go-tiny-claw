@@ -17,15 +17,16 @@ import (
 )
 
 type AgentEngine struct {
-	provider       provider.LLMProvider
-	registry       tools.Registry
-	EnableThinking bool
-	PlanMode       bool // 【新增】计划模式开关
-	compactor      *ctxpkg.Compactor
-	recovery       *RecoveryManager
-	injector       *ReminderInjector
-	MaxTurns       int
-	approvalGate   *approval.Gate
+	provider           provider.LLMProvider
+	registry           tools.Registry
+	EnableThinking     bool
+	PlanMode           bool // 【新增】计划模式开关
+	compactor          *ctxpkg.Compactor
+	recovery           *RecoveryManager
+	injector           *ReminderInjector
+	MaxTurns           int
+	approvalGate       *approval.Gate
+	MaxToolConcurrency int
 }
 
 type IndexedToolCall struct {
@@ -35,15 +36,16 @@ type IndexedToolCall struct {
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, approvalGate *approval.Gate, enableThinking bool, planMode bool) *AgentEngine {
 	return &AgentEngine{
-		provider:       p,
-		registry:       r,
-		EnableThinking: enableThinking,
-		PlanMode:       planMode,
-		compactor:      ctxpkg.NewCompactor(20000, 6),
-		recovery:       NewRecoveryManager(),
-		injector:       NewReminderInjector(),
-		MaxTurns:       20,
-		approvalGate:   approvalGate,
+		provider:           p,
+		registry:           r,
+		EnableThinking:     enableThinking,
+		PlanMode:           planMode,
+		compactor:          ctxpkg.NewCompactor(20000, 6),
+		recovery:           NewRecoveryManager(),
+		injector:           NewReminderInjector(),
+		MaxTurns:           20,
+		approvalGate:       approvalGate,
+		MaxToolConcurrency: 8,
 	}
 }
 
@@ -185,14 +187,35 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 
 			}
 
+			limit := e.MaxToolConcurrency
+			if limit <= 0 {
+				limit = 8
+			}
+
+			sem := make(chan struct{}, limit)
+
 			for _, item := range approvedCalls {
 				wg.Add(1)
 				go func(item IndexedToolCall) {
 					defer wg.Done()
+
+					select {
+					case <-ctx.Done():
+						observationMsgs[item.index] = schema.Message{
+							Role:       schema.RoleUser,
+							Content:    "工具调用已取消",
+							ToolCallID: item.call.ID,
+						}
+						return
+					case sem <- struct{}{}:
+						defer func() {
+							<-sem
+						}()
+					}
+
 					if rep != nil {
 						rep.OnToolCall(ctx, item.call.Name, string(item.call.Arguments))
 					}
-
 					result := e.registry.Execute(ctx, item.call)
 
 					finalOutput := result.Output
