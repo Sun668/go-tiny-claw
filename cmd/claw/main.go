@@ -10,7 +10,6 @@ import (
 
 	"github.com/Sun668/go-tiny-claw/internal/cli"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
-	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	runtime "github.com/Sun668/go-tiny-claw/internal/runtime"
 )
 
@@ -23,36 +22,25 @@ func main() {
 	workDir += "/workspace"
 	llmProvider := provider.NewOpenAICompatibleProvider("glm-5-2-260617")
 
-	reader := bufio.NewReader(os.Stdin)
-
 	factory := runtime.NewRuntimeFactory(llmProvider, workDir, nil)
 
 	manager := runtime.NewManagerWithFactory(factory)
 
-	approvalHandler, err := cli.NewTerminalApprovalHandler(os.Stdout)
-	if err != nil {
-		log.Fatalf("创建审批处理器失败: %v", err)
-	}
-
-	runtimeBundle, err := manager.Create(
+	session, err := cli.NewTerminalSession(
 		"terminal_default",
-		runtime.RuntimeOptions{
-			ApprovalHandler: approvalHandler,
-			Reporter:        reporter.NewTerminalReporter(os.Stdout),
-		},
+		manager,
+		bufio.NewReader(os.Stdin),
+		os.Stdout,
 	)
 
 	if err != nil {
-		log.Fatalf("创建 Runtime 失败: %v", err)
+		log.Fatalf("创建终端会话失败: %v", err)
 	}
-
 	defer func() {
-		if err := manager.Destroy("terminal_default"); err != nil {
-			log.Printf("销毁 Runtime 失败: %v", err)
+		if err := session.Close(); err != nil {
+			log.Printf("关闭终端会话失败: %v", err)
 		}
 	}()
-
-	repl := cli.NewREPL(reader, os.Stdout, runtimeBundle.Runtime, runtimeBundle.Reporter, approvalHandler)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
@@ -60,11 +48,11 @@ func main() {
 
 	go func() {
 		for range signals {
-			repl.Interrupt()
+			session.Interrupt()
 		}
 	}()
 
-	if err := repl.Run(context.Background()); err != nil {
+	if err := session.Run(context.Background()); err != nil {
 		log.Fatalf("引擎崩溃: %v", err)
 	}
 }
