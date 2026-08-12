@@ -22,7 +22,7 @@ type AgentEngine struct {
 	EnableThinking bool
 	PlanMode       bool // 【新增】计划模式开关
 	compactor      *ctxpkg.Compactor
-	recovery       *ctxpkg.RecoveryManager // 【新增】自愈管理器
+	recovery       *RecoveryManager
 	injector       *ReminderInjector
 	MaxTurns       int
 	approvalGate   *approval.Gate
@@ -40,7 +40,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, approvalGate *appr
 		EnableThinking: enableThinking,
 		PlanMode:       planMode,
 		compactor:      ctxpkg.NewCompactor(20000, 6),
-		recovery:       ctxpkg.NewRecoveryManager(),
+		recovery:       NewRecoveryManager(),
 		injector:       NewReminderInjector(),
 		MaxTurns:       20,
 		approvalGate:   approvalGate,
