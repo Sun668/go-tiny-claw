@@ -36,6 +36,7 @@ func (c *PromptComposer) Build() schema.Message {
 4. 无论何时你需要写代码或创建文件，都要直接使用 write_file 工具。
 5. 遇到工具执行报错时，仔细阅读 stderr，尝试自己修正命令并重试。
 6. 始终用中文回复，以便传达你的进展和想法。
+7. 若任务匹配某个 Agent Skill 的触发条件，必须先调用 read_skill 读取完整指南再执行。
 `)
 
 	if c.planMode {
@@ -74,8 +75,8 @@ func (c *PromptComposer) Build() schema.Message {
 		promptBuilder.WriteString("\n```\n")
 	}
 
-	// 4. 动态加载技能外挂 (Skills)
-	skillsContent := c.skillLoader.LoadAll()
+	// 4. 只注入技能目录，正文由 read_skill 按需加载
+	skillsContent := c.skillLoader.CatalogPrompt()
 	if skillsContent != "" {
 		promptBuilder.WriteString(skillsContent)
 	}

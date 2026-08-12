@@ -103,6 +103,10 @@ func (f *RuntimeFactory) newToolRegistry() tools.Registry {
 	)
 
 	registry.Register(
+		tools.NewReadSkillTool(f.workDir),
+	)
+
+	registry.Register(
 		tools.NewEditFileTool(f.workDir),
 	)
 
