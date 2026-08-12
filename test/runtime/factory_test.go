@@ -1,10 +1,8 @@
 package runtime_test
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
@@ -27,6 +25,22 @@ func (p *fakeProvider) Generate(
 
 var _ provider.LLMProvider = (*fakeProvider)(nil)
 
+type allowApprovalHandler struct{}
+
+func (allowApprovalHandler) Approve(
+	_ context.Context,
+	_ approval.Request,
+) (approval.Decision, error) {
+	return approval.AllowOnce, nil
+}
+
+func newTestRuntimeOptions() runtimepkg.RuntimeOptions {
+	return runtimepkg.RuntimeOptions{
+		ApprovalHandler: allowApprovalHandler{},
+		Reporter:        reporter.NewTerminalReporter(&bytes.Buffer{}),
+	}
+}
+
 func TestFactoryCreatesIndependentRuntimes(t *testing.T) {
 	factory := runtimepkg.NewRuntimeFactory(
 		&fakeProvider{},
@@ -34,20 +48,12 @@ func TestFactoryCreatesIndependentRuntimes(t *testing.T) {
 		ctxpkg.GlobalSessionMgr,
 	)
 
-	bundleA, err := factory.NewTerminalRuntime(
-		"factory-session-a",
-		bufio.NewReader(strings.NewReader("")),
-		&bytes.Buffer{},
-	)
+	bundleA, err := factory.NewRuntime("factory-session-a", newTestRuntimeOptions())
 	if err != nil {
 		t.Fatalf("创建第一个 Runtime 失败: %v", err)
 	}
 
-	bundleB, err := factory.NewTerminalRuntime(
-		"factory-session-b",
-		bufio.NewReader(strings.NewReader("")),
-		&bytes.Buffer{},
-	)
+	bundleB, err := factory.NewRuntime("factory-session-b", newTestRuntimeOptions())
 	if err != nil {
 		t.Fatalf("创建第二个 Runtime 失败: %v", err)
 	}
@@ -65,7 +71,7 @@ func TestFactoryCreatesIndependentRuntimes(t *testing.T) {
 	}
 
 	if bundleA.Reporter == bundleB.Reporter {
-		t.Fatal("不同 Terminal 不应该共享 Reporter")
+		t.Fatal("不同 Runtime 不应该共享 Reporter")
 	}
 }
 
@@ -76,20 +82,12 @@ func TestFactoryReusesSessionByID(t *testing.T) {
 		ctxpkg.GlobalSessionMgr,
 	)
 
-	firstBundle, err := factory.NewTerminalRuntime(
-		"factory-reused-session",
-		bufio.NewReader(strings.NewReader("")),
-		&bytes.Buffer{},
-	)
+	firstBundle, err := factory.NewRuntime("factory-reused-session", newTestRuntimeOptions())
 	if err != nil {
 		t.Fatalf("第一次创建 Runtime 失败: %v", err)
 	}
 
-	secondBundle, err := factory.NewTerminalRuntime(
-		"factory-reused-session",
-		bufio.NewReader(strings.NewReader("")),
-		&bytes.Buffer{},
-	)
+	secondBundle, err := factory.NewRuntime("factory-reused-session", newTestRuntimeOptions())
 	if err != nil {
 		t.Fatalf("第二次创建 Runtime 失败: %v", err)
 	}
@@ -107,16 +105,7 @@ func TestManagerCreatesAndDestroysRuntime(t *testing.T) {
 	)
 	manager := runtimepkg.NewManagerWithFactory(factory)
 
-	bundle, err := manager.Create(
-		"managed-terminal",
-		runtimepkg.RuntimeOptions{
-			ApprovalHandler: approval.NewTerminalApprovalHandler(
-				bufio.NewReader(strings.NewReader("")),
-				&bytes.Buffer{},
-			),
-			Reporter: reporter.NewTerminalReporter(&bytes.Buffer{}),
-		},
-	)
+	bundle, err := manager.Create("managed-terminal", newTestRuntimeOptions())
 	if err != nil {
 		t.Fatalf("Manager 创建 Runtime 失败: %v", err)
 	}

@@ -1,9 +1,7 @@
 package runtime
 
 import (
-	"bufio"
 	"errors"
-	"io"
 	"strings"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
@@ -70,21 +68,6 @@ func (f *RuntimeFactory) NewRuntime(sessionID string, options RuntimeOptions) (*
 		Runtime:  agentRuntime,
 		Reporter: options.Reporter,
 	}, nil
-}
-
-func (f *RuntimeFactory) NewTerminalRuntime(sessionID string, reader *bufio.Reader, out io.Writer) (*RuntimeBundle, error) {
-	if reader == nil {
-		return nil, errors.New("终端读取器不能为空")
-	}
-
-	if out == nil {
-		return nil, errors.New("终端输出不能为空")
-	}
-
-	return f.NewRuntime(sessionID, RuntimeOptions{
-		ApprovalHandler: approval.NewTerminalApprovalHandler(reader, out),
-		Reporter:        reporter.NewTerminalReporter(out),
-	})
 }
 
 func (f *RuntimeFactory) newToolRegistry() tools.Registry {

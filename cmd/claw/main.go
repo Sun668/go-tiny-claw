@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/cli"
 	"github.com/Sun668/go-tiny-claw/internal/provider"
 	"github.com/Sun668/go-tiny-claw/internal/reporter"
@@ -30,10 +29,15 @@ func main() {
 
 	manager := runtime.NewManagerWithFactory(factory)
 
+	approvalHandler, err := cli.NewTerminalApprovalHandler(os.Stdout)
+	if err != nil {
+		log.Fatalf("创建审批处理器失败: %v", err)
+	}
+
 	runtimeBundle, err := manager.Create(
 		"terminal_default",
 		runtime.RuntimeOptions{
-			ApprovalHandler: approval.NewTerminalApprovalHandler(reader, os.Stdout),
+			ApprovalHandler: approvalHandler,
 			Reporter:        reporter.NewTerminalReporter(os.Stdout),
 		},
 	)
@@ -48,7 +52,7 @@ func main() {
 		}
 	}()
 
-	repl := cli.NewREPL(reader, os.Stdout, runtimeBundle.Runtime, runtimeBundle.Reporter)
+	repl := cli.NewREPL(reader, os.Stdout, runtimeBundle.Runtime, runtimeBundle.Reporter, approvalHandler)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)

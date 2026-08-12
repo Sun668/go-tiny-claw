@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Sun668/go-tiny-claw/internal/approval"
 	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	runtime "github.com/Sun668/go-tiny-claw/internal/runtime"
 )
@@ -23,6 +24,7 @@ type REPL struct {
 	out      io.Writer
 	runtime  Runtime
 	reporter reporter.Reporter
+	approval *TerminalApprovalHandler
 
 	mu     sync.Mutex
 	active *runtime.Task
@@ -33,7 +35,10 @@ func (r *REPL) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		fmt.Fprint(r.out, "\nclaw>")
+
+		if r.isIdle() {
+			fmt.Fprint(r.out, "\nclaw>")
+		}
 
 		line, err := r.reader.ReadString('\n')
 
@@ -45,6 +50,23 @@ func (r *REPL) Run(ctx context.Context) error {
 		}
 
 		prompt := strings.TrimSpace(line)
+
+		if r.approval != nil && r.approval.HasPending() {
+			decision, ok := parseApprovalDecision(prompt)
+			if !ok {
+				fmt.Fprintln(r.out, "请输入 y / a / n")
+				continue
+			}
+			if err := r.approval.Respond(decision); err != nil {
+				fmt.Fprintln(r.out, err)
+			}
+			continue
+		}
+
+		if !r.isIdle() {
+			fmt.Fprintln(r.out, "当前任务正在执行，请等待任务完成。")
+			continue
+		}
 
 		if prompt == "" {
 			continue
@@ -81,26 +103,28 @@ func (r *REPL) runTurn(parent context.Context, prompt string) error {
 	r.active = task
 	r.mu.Unlock()
 
-	defer func() {
+	go func() {
+		err := task.Wait()
 		r.mu.Lock()
 		if r.active == task {
 			r.active = nil
 		}
 		r.mu.Unlock()
+		switch task.Status() {
+		case runtime.TaskCanceled:
+			fmt.Fprintln(r.out, "任务已取消。")
+		case runtime.TaskTimedOut:
+			fmt.Fprintln(r.out, "任务超时。")
+		default:
+			if err != nil {
+				fmt.Fprintf(r.out, "引擎运行出错: %v\n", err)
+			}
+		}
+
 	}()
 
-	err = task.Wait()
+	return nil
 
-	switch task.Status() {
-	case runtime.TaskCanceled:
-		fmt.Fprintln(r.out, "任务已取消。")
-		return nil
-	case runtime.TaskTimedOut:
-		fmt.Fprintln(r.out, "任务超时。")
-		return nil
-	default:
-		return err
-	}
 }
 
 func (r *REPL) Interrupt() {
@@ -116,12 +140,13 @@ func (r *REPL) Interrupt() {
 	task.Cancel()
 }
 
-func NewREPL(reader *bufio.Reader, out io.Writer, rt Runtime, rep reporter.Reporter) *REPL {
+func NewREPL(reader *bufio.Reader, out io.Writer, rt Runtime, rep reporter.Reporter, approval *TerminalApprovalHandler) *REPL {
 	return &REPL{
 		reader:   reader,
 		out:      out,
 		runtime:  rt,
 		reporter: rep,
+		approval: approval,
 	}
 }
 
@@ -131,4 +156,23 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  /clear  清空当前会话")
 	fmt.Fprintln(out, "  /exit   退出程序")
 	fmt.Fprintln(out, "  /quit   退出程序")
+}
+
+func (r *REPL) isIdle() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.active == nil
+}
+
+func parseApprovalDecision(input string) (approval.Decision, bool) {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "y":
+		return approval.AllowOnce, true
+	case "a":
+		return approval.AllowSession, true
+	case "n", "":
+		return approval.Deny, true
+	default:
+		return "", false
+	}
 }
