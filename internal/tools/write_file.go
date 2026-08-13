@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
+	"github.com/Sun668/go-tiny-claw/internal/sandbox"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -55,15 +56,18 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "", fmt.Errorf("参数解析失败: %w", err)
 	}
 
-	fullPath := filepath.Join(t.workDir, input.Path)
+	fullPath, err := sandbox.ResolveWithinWorkspace(t.workDir, input.Path)
+	if err != nil {
+		return "", fmt.Errorf("解析文件路径失败: %w", err)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return "", fmt.Errorf("创建父目录失败: %w", err)
 	}
 
-	err := os.WriteFile(fullPath, []byte(input.Content), 0644)
-	if err != nil {
-		return "", fmt.Errorf("写入文件失败: %w", err)
+	writeErr := os.WriteFile(fullPath, []byte(input.Content), 0644)
+	if writeErr != nil {
+		return "", fmt.Errorf("写入文件失败: %w", writeErr)
 	}
 
 	return fmt.Sprintf("成功将内容写入到文件: %s", input.Path), nil

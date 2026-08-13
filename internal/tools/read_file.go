@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
+	"github.com/Sun668/go-tiny-claw/internal/sandbox"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -51,7 +51,10 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", fmt.Errorf("参数解析失败: %w", err)
 	}
 
-	fullPath := filepath.Join(t.workDir, input.Path)
+	fullPath, err := sandbox.ResolveWithinWorkspace(t.workDir, input.Path)
+	if err != nil {
+		return "", fmt.Errorf("解析文件路径失败: %w", err)
+	}
 
 	file, err := os.Open(fullPath)
 	if err != nil {

@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
+	"github.com/Sun668/go-tiny-claw/internal/sandbox"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -61,7 +61,10 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", fmt.Errorf("参数解析失败: %w", err)
 	}
 
-	fullPath := filepath.Join(t.workDir, input.Path)
+	fullPath, err := sandbox.ResolveWithinWorkspace(t.workDir, input.Path)
+	if err != nil {
+		return "", fmt.Errorf("解析文件路径失败: %w", err)
+	}
 
 	contentBytes, err := os.ReadFile(fullPath)
 	if err != nil {
