@@ -355,10 +355,8 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 				defer wg.Done()
 
 				// 【可视化的关键】：让终端用户看到 Subagent 正在干嘛
-				var r reporter.Reporter
 				if rep != nil {
-					r = rep.(reporter.Reporter)
-					r.OnToolCall(ctx, fmt.Sprintf("[Subagent] %s", call.Name), string(call.Arguments))
+					rep.OnToolCall(ctx, fmt.Sprintf("[Subagent] %s", call.Name), string(call.Arguments))
 				}
 
 				result := readOnlyRegistry.Execute(ctx, call)
@@ -373,7 +371,7 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 					if len(display) > 200 {
 						display = display[:200] + "... (已截断)"
 					}
-					r.OnToolResult(ctx, fmt.Sprintf("[Subagent] %s", call.Name), display, result.IsError)
+					rep.OnToolResult(ctx, fmt.Sprintf("[Subagent] %s", call.Name), display, result.IsError)
 				}
 
 				observationMsgs[idx] = schema.Message{
