@@ -8,10 +8,11 @@ import (
 )
 
 type Grant struct {
-	SessionID string
-	ToolName  string
-	WorkDir   string
-	ExpiresAt time.Time
+	SessionID      string
+	ToolName       string
+	WorkDir        string
+	ExpiresAt      time.Time
+	ArgumentDigest string
 }
 
 type GrantStore interface {
@@ -21,8 +22,10 @@ type GrantStore interface {
 }
 
 type grantKey struct {
-	sessionID string
-	toolName  string
+	sessionID      string
+	workDir        string
+	toolName       string
+	argumentDigest string
 }
 
 type MemoryGrantStore struct {
@@ -36,15 +39,29 @@ func NewMemoryGrantStore() *MemoryGrantStore {
 	}
 }
 
+func keyFromGrant(grant Grant) grantKey {
+	return grantKey{
+		sessionID:      grant.SessionID,
+		workDir:        grant.WorkDir,
+		toolName:       grant.ToolName,
+		argumentDigest: grant.ArgumentDigest,
+	}
+}
+func keyFromRequest(req Request) grantKey {
+	return grantKey{
+		sessionID:      req.SessionID,
+		workDir:        req.WorkDir,
+		toolName:       req.ToolCall.Name,
+		argumentDigest: DigestArguments(req.ToolCall.Arguments),
+	}
+}
+
 func (s *MemoryGrantStore) Has(ctx context.Context, request Request) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 
-	key := grantKey{
-		sessionID: request.SessionID,
-		toolName:  request.ToolCall.Name,
-	}
+	key := keyFromRequest(request)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -79,10 +96,11 @@ func (s *MemoryGrantStore) Save(
 		return fmt.Errorf("grant tool name 不能为空")
 	}
 
-	key := grantKey{
-		sessionID: grant.SessionID,
-		toolName:  grant.ToolName,
+	if grant.WorkDir == "" {
+		return fmt.Errorf("grant 工作区不能为空")
 	}
+
+	key := keyFromGrant(grant)
 
 	s.mu.Lock()
 	s.grants[key] = grant
@@ -99,10 +117,7 @@ func (s *MemoryGrantStore) Revoke(
 		return err
 	}
 
-	key := grantKey{
-		sessionID: grant.SessionID,
-		toolName:  grant.ToolName,
-	}
+	key := keyFromGrant(grant)
 
 	s.mu.Lock()
 	delete(s.grants, key)

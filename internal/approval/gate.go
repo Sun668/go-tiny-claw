@@ -33,8 +33,10 @@ func (g *Gate) Check(ctx context.Context, request Request) (Decision, error) {
 
 	if decision == AllowSession {
 		err = g.grants.Save(ctx, Grant{
-			SessionID: request.SessionID,
-			ToolName:  request.ToolCall.Name,
+			SessionID:      request.SessionID,
+			WorkDir:        request.WorkDir,
+			ToolName:       request.ToolCall.Name,
+			ArgumentDigest: DigestArguments(request.ToolCall.Arguments),
 		})
 	}
 

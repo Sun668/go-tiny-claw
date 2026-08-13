@@ -26,6 +26,7 @@ const (
 type Request struct {
 	ID        string
 	SessionID string
+	WorkDir   string
 	ToolCall  schema.ToolCall
 	Risk      RiskLevel
 	Reason    string

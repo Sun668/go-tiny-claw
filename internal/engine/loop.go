@@ -174,6 +174,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 				req := approval.Request{
 					ID:        approval.NewRequestID(),
 					SessionID: session.ID,
+					WorkDir:   session.WorkDir,
 					ToolCall:  toolCall,
 					Risk:      e.registry.GetRiskLevel(toolCall.Name),
 				}
