@@ -8,11 +8,11 @@ import (
 )
 
 type Grant struct {
-	SessionID      string
-	ToolName       string
-	WorkDir        string
-	ExpiresAt      time.Time
-	ArgumentDigest string
+	SessionID      string    `json:"session_id"`
+	ToolName       string    `json:"tool_name"`
+	WorkDir        string    `json:"work_dir"`
+	ExpiresAt      time.Time `json:"expires_at,omitempty"`
+	ArgumentDigest string    `json:"argument_digest"`
 }
 
 type GrantStore interface {
@@ -37,6 +37,19 @@ func NewMemoryGrantStore() *MemoryGrantStore {
 	return &MemoryGrantStore{
 		grants: make(map[grantKey]Grant),
 	}
+}
+
+func validateGrant(grant Grant) error {
+	if grant.SessionID == "" {
+		return fmt.Errorf("grant session ID 不能为空")
+	}
+	if grant.ToolName == "" {
+		return fmt.Errorf("grant tool name 不能为空")
+	}
+	if grant.WorkDir == "" {
+		return fmt.Errorf("grant 工作区不能为空")
+	}
+	return nil
 }
 
 func keyFromGrant(grant Grant) grantKey {
@@ -88,16 +101,8 @@ func (s *MemoryGrantStore) Save(
 		return err
 	}
 
-	if grant.SessionID == "" {
-		return fmt.Errorf("grant session ID 不能为空")
-	}
-
-	if grant.ToolName == "" {
-		return fmt.Errorf("grant tool name 不能为空")
-	}
-
-	if grant.WorkDir == "" {
-		return fmt.Errorf("grant 工作区不能为空")
+	if err := validateGrant(grant); err != nil {
+		return err
 	}
 
 	key := keyFromGrant(grant)

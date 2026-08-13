@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"strings"
+	"sync"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
@@ -13,9 +14,11 @@ import (
 )
 
 type RuntimeFactory struct {
-	provider provider.LLMProvider
-	workDir  string
-	sessions *ctxpkg.SessionManager
+	provider   provider.LLMProvider
+	workDir    string
+	sessions   *ctxpkg.SessionManager
+	grantMu    sync.Mutex
+	grantStore approval.GrantStore
 }
 
 type RuntimeBundle struct {
@@ -52,7 +55,10 @@ func (f *RuntimeFactory) NewRuntime(sessionID string, options RuntimeOptions) (*
 
 	registry := f.newToolRegistry()
 
-	grantStore := approval.NewMemoryGrantStore()
+	grantStore, err := f.sharedGrantStore()
+	if err != nil {
+		return nil, err
+	}
 
 	approvalGate := approval.NewGate(
 		approval.DefaultPolicy{},
@@ -68,6 +74,23 @@ func (f *RuntimeFactory) NewRuntime(sessionID string, options RuntimeOptions) (*
 		Runtime:  agentRuntime,
 		Reporter: options.Reporter,
 	}, nil
+}
+
+func (f *RuntimeFactory) sharedGrantStore() (approval.GrantStore, error) {
+	f.grantMu.Lock()
+	defer f.grantMu.Unlock()
+
+	if f.grantStore != nil {
+		return f.grantStore, nil
+	}
+
+	store, err := approval.NewFileGrantStore(f.workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	f.grantStore = store
+	return store, nil
 }
 
 func (f *RuntimeFactory) newToolRegistry() tools.Registry {
