@@ -21,6 +21,7 @@ type queuedEvent struct {
 type JSONEventSink struct {
 	writer    *MessageWriter
 	queue     chan queuedEvent
+	wg        sync.WaitGroup
 	done      chan struct{}
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -43,11 +44,13 @@ func NewJSONEventSinkWithCapacity(writer *MessageWriter, size int) (*JSONEventSi
 		queue:  make(chan queuedEvent, size),
 		done:   make(chan struct{}),
 	}
+	sink.wg.Add(1)
 	go sink.loop()
 	return sink, nil
 }
 
 func (s *JSONEventSink) loop() {
+	defer s.wg.Done()
 	for {
 		select {
 		case <-s.done:
@@ -82,4 +85,8 @@ func (s *JSONEventSink) Close() {
 		s.closed.Store(true)
 		close(s.done)
 	})
+}
+
+func (s *JSONEventSink) Wait() {
+	s.wg.Wait()
 }

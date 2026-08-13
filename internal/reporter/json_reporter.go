@@ -17,12 +17,12 @@ func NewJSONReporter(sink EventSink) *JSONReporter {
 func (r *JSONReporter) publish(
 	ctx context.Context,
 	event Event,
-) {
-	_ = r.sink.Publish(ctx, event)
+) error {
+	return r.sink.Publish(ctx, event)
 }
 
-func (r *JSONReporter) OnThinking(ctx context.Context) {
-	r.publish(ctx, Event{
+func (r *JSONReporter) OnThinking(ctx context.Context) error {
+	return r.publish(ctx, Event{
 		Type: EventThinking,
 	})
 }
@@ -31,8 +31,8 @@ func (r *JSONReporter) OnToolCall(
 	ctx context.Context,
 	toolName string,
 	args string,
-) {
-	r.publish(ctx, Event{
+) error {
+	return r.publish(ctx, Event{
 		Type:     EventToolCall,
 		ToolName: toolName,
 		Content:  args,
@@ -44,8 +44,8 @@ func (r *JSONReporter) OnToolResult(
 	toolName string,
 	result string,
 	isError bool,
-) {
-	r.publish(ctx, Event{
+) error {
+	return r.publish(ctx, Event{
 		Type:     EventToolResult,
 		ToolName: toolName,
 		Result:   result,
@@ -56,8 +56,8 @@ func (r *JSONReporter) OnToolResult(
 func (r *JSONReporter) OnMessage(
 	ctx context.Context,
 	content string,
-) {
-	r.publish(ctx, Event{
+) error {
+	return r.publish(ctx, Event{
 		Type:    EventTextCompleted,
 		Content: content,
 	})
@@ -66,15 +66,15 @@ func (r *JSONReporter) OnMessage(
 func (r *JSONReporter) OnTextDelta(
 	ctx context.Context,
 	delta string,
-) {
-	r.publish(ctx, Event{
+) error {
+	return r.publish(ctx, Event{
 		Type:    EventTextDelta,
 		Content: delta,
 	})
 }
 
-func (r *JSONReporter) OnTextComplete(ctx context.Context) {
-	r.publish(ctx, Event{
+func (r *JSONReporter) OnTextComplete(ctx context.Context) error {
+	return r.publish(ctx, Event{
 		Type: EventTextCompleted,
 	})
 }

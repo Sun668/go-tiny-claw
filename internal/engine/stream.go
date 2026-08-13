@@ -16,6 +16,9 @@ func (e *AgentEngine) generate(
 	rep reporter.Reporter,
 	emitText bool,
 ) (*schema.Message, bool, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	streamProvider, ok := e.provider.(provider.StreamingProvider)
 	if !ok {
 		message, err := e.provider.Generate(ctx, messages, tools)
@@ -47,14 +50,18 @@ func (e *AgentEngine) generate(
 			switch event.Type {
 			case provider.StreamTextDelta:
 				if emitText && canStream {
-					streamReporter.OnTextDelta(ctx, event.Text)
+					if err := streamReporter.OnTextDelta(ctx, event.Text); err != nil {
+						return nil, false, err
+					}
 					emittedText = true
 				}
 
 			case provider.StreamCompleted:
 				finalMessage = event.Message
 				if emitText && canStream {
-					streamReporter.OnTextComplete(ctx)
+					if err := streamReporter.OnTextComplete(ctx); err != nil {
+						return nil, false, err
+					}
 				}
 
 			case provider.StreamError:

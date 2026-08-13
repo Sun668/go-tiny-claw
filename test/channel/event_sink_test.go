@@ -41,6 +41,16 @@ func newTestSink(t *testing.T, output io.Writer, size int) *channel.JSONEventSin
 
 	t.Cleanup(func() {
 		sink.Close()
+		waitDone := make(chan struct{})
+		go func() {
+			sink.Wait()
+			close(waitDone)
+		}()
+		select {
+		case <-waitDone:
+		case <-time.After(2 * time.Second):
+			t.Error("超时：EventSink loop 未退出")
+		}
 	})
 
 	return sink
@@ -116,5 +126,54 @@ func TestEventSinkPublishAfterClose(t *testing.T) {
 	})
 	if !errors.Is(err, channel.ErrEventSinkClosed) {
 		t.Fatalf("关闭后 Publish 应返回 ErrEventSinkClosed，实际: %v", err)
+	}
+}
+
+func TestEventSinkWaitReturnsAfterWriteUnblocks(t *testing.T) {
+	writer := &blockingWriter{
+		started: make(chan struct{}),
+		block:   make(chan struct{}),
+	}
+	sink := newTestSink(t, writer, 1)
+	t.Cleanup(func() {
+		select {
+		case <-writer.block:
+		default:
+			close(writer.block)
+		}
+	})
+
+	if err := sink.Publish(context.Background(), reporter.Event{
+		Type: reporter.EventThinking,
+	}); err != nil {
+		t.Fatalf("入队失败: %v", err)
+	}
+
+	select {
+	case <-writer.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("超时：writer 未开始阻塞")
+	}
+
+	sink.Close()
+
+	waitDone := make(chan struct{})
+	go func() {
+		sink.Wait()
+		close(waitDone)
+	}()
+
+	select {
+	case <-waitDone:
+		t.Fatal("Write 仍阻塞时 Wait 不应返回")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(writer.block)
+
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("超时：Write 返回后 Wait 应结束")
 	}
 }

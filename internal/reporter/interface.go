@@ -3,15 +3,15 @@ package reporter
 import "context"
 
 type Reporter interface {
-	OnThinking(ctx context.Context)
-	OnToolCall(ctx context.Context, toolName string, args string)
-	OnToolResult(ctx context.Context, toolName string, result string, isError bool)
-	OnMessage(ctx context.Context, content string)
+	OnThinking(ctx context.Context) error
+	OnToolCall(ctx context.Context, toolName string, args string) error
+	OnToolResult(ctx context.Context, toolName string, result string, isError bool) error
+	OnMessage(ctx context.Context, content string) error
 }
 
 type StreamReporter interface {
-	OnTextDelta(ctx context.Context, delta string)
-	OnTextComplete(ctx context.Context)
+	OnTextDelta(ctx context.Context, delta string) error
+	OnTextComplete(ctx context.Context) error
 }
 
 type EventType string

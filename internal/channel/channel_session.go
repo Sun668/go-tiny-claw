@@ -189,6 +189,7 @@ func (s *ChannelSession) Close() error {
 		destroyErr := s.manager.Destroy(s.id)
 		s.events.Close()
 		closeErr := s.conn.Close()
+		s.events.Wait()
 
 		if destroyErr != nil &&
 			!errors.Is(destroyErr, runtimepkg.ErrRuntimeNotFound) {

@@ -22,13 +22,14 @@ func NewTerminalReporter(out io.Writer) *TerminalReporter {
 	}
 }
 
-func (r *TerminalReporter) OnThinking(ctx context.Context) {
+func (r *TerminalReporter) OnThinking(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	fmt.Fprint(r.out, "\n[🤔 思考中] 模型正在推理...\n")
+	return nil
 }
 
-func (r *TerminalReporter) OnToolCall(ctx context.Context, toolName string, args string) {
+func (r *TerminalReporter) OnToolCall(ctx context.Context, toolName string, args string) error {
 	// 清理参数中的换行符和特殊字符
 	displayArgs := strings.ReplaceAll(args, "\n", "\\n")
 	displayArgs = strings.ReplaceAll(displayArgs, "\r", "\\r")
@@ -41,9 +42,10 @@ func (r *TerminalReporter) OnToolCall(ctx context.Context, toolName string, args
 
 	fmt.Fprintf(r.out, "[🛠️ 调用工具] %s\n", toolName)
 	fmt.Fprintf(r.out, "   参数: %s\n", displayArgs)
+	return nil
 }
 
-func (r *TerminalReporter) OnToolResult(ctx context.Context, toolName string, result string, isError bool) {
+func (r *TerminalReporter) OnToolResult(ctx context.Context, toolName string, result string, isError bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -56,31 +58,35 @@ func (r *TerminalReporter) OnToolResult(ctx context.Context, toolName string, re
 	} else {
 		fmt.Fprintf(r.out, "[✅ 执行成功] %s\n", toolName)
 	}
+	return nil
 }
 
-func (r *TerminalReporter) OnMessage(ctx context.Context, content string) {
+func (r *TerminalReporter) OnMessage(ctx context.Context, content string) error {
 	if content == "" {
-		return
+		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	fmt.Fprintf(r.out, "\n🤖 Agent 回复:\n%s\n\n", content)
+	return nil
 }
 
-func (r *TerminalReporter) OnTextDelta(ctx context.Context, delta string) {
+func (r *TerminalReporter) OnTextDelta(ctx context.Context, delta string) error {
 	if delta == "" {
-		return
+		return nil
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	fmt.Fprint(r.out, delta)
+	return nil
 }
 
-func (r *TerminalReporter) OnTextComplete(ctx context.Context) {
+func (r *TerminalReporter) OnTextComplete(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	fmt.Fprint(r.out, "\n\n")
+	return nil
 }

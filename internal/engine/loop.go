@@ -94,20 +94,26 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 			// ================= Phase 1: Thinking =================
 			if e.EnableThinking {
 				if rep != nil {
-					rep.OnThinking(ctx)
+					if err := rep.OnThinking(ctx); err != nil {
+						return false, err
+					}
 				}
 
 				thinkCtx, thinkSpan := observability.StartSpan(turnCtx, "LLM.Thinking")
 				thinkResp, streamed, err := e.generate(thinkCtx, compactedContext, nil, rep, true)
-				// 汇报给用户
-				if thinkResp.Content != "" && rep != nil && !streamed {
-					rep.OnMessage(ctx, thinkResp.Content)
-				}
-				thinkSpan.EndSpan() // 结束思考跨度
 
+				defer thinkSpan.EndSpan() // 结束思考跨度
+				// 汇报给用户
 				if err != nil {
 					return false, fmt.Errorf("Thinking 阶段失败: %w", err)
 				}
+
+				if thinkResp.Content != "" && rep != nil && !streamed {
+					if err := rep.OnMessage(ctx, thinkResp.Content); err != nil {
+						return false, err
+					}
+				}
+
 				if thinkResp.Content != "" {
 					// 【修改点】：思考内容暂存，先不 Append 到 session
 					currentTurnThinkingContent = thinkResp.Content
@@ -121,7 +127,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 			// ================= Phase 2: Action =================
 			actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
 			actionResp, streamed, err := e.generate(actCtx, compactedContext, availableTools, rep, true)
-			actSpan.EndSpan() // 结束行动跨度
+			defer actSpan.EndSpan() // 结束行动跨度
 
 			if err != nil {
 				return false, fmt.Errorf("Action 阶段失败: %w", err)
@@ -140,7 +146,18 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 
 			// 汇报给用户
 			if actionResp.Content != "" && rep != nil && !streamed {
-				rep.OnMessage(ctx, actionResp.Content)
+				if err := rep.OnMessage(ctx, actionResp.Content); err != nil {
+					if len(actionResp.ToolCalls) > 0 {
+						observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
+						EnsureToolObservations(
+							actionResp.ToolCalls,
+							observationMsgs,
+							"工具调用已取消",
+						)
+						session.Append(observationMsgs...)
+					}
+					return false, err
+				}
 			}
 
 			// 如果没有工具调用，结束本轮对话
@@ -152,7 +169,6 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 			observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 			approvedCalls := make([]IndexedToolCall, 0, len(actionResp.ToolCalls))
 			toolResults := make([]schema.ToolResult, len(actionResp.ToolCalls))
-			var wg sync.WaitGroup
 
 			for i, toolCall := range actionResp.ToolCalls {
 				req := approval.Request{
@@ -192,7 +208,24 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 				limit = 8
 			}
 
+			var wg sync.WaitGroup
 			sem := make(chan struct{}, limit)
+
+			var (
+				reportMu  sync.Mutex
+				reportErr error
+			)
+
+			setReportErr := func(err error) {
+				if err == nil {
+					return
+				}
+				reportMu.Lock()
+				defer reportMu.Unlock()
+				if reportErr == nil {
+					reportErr = err
+				}
+			}
 
 			for _, item := range approvedCalls {
 				wg.Add(1)
@@ -214,7 +247,15 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 					}
 
 					if rep != nil {
-						rep.OnToolCall(ctx, item.call.Name, string(item.call.Arguments))
+						if err := rep.OnToolCall(ctx, item.call.Name, string(item.call.Arguments)); err != nil {
+							setReportErr(err)
+							observationMsgs[item.index] = schema.Message{
+								Role:       schema.RoleUser,
+								Content:    "工具调用已取消",
+								ToolCallID: item.call.ID,
+							}
+							return
+						}
 					}
 					result := e.registry.Execute(ctx, item.call)
 
@@ -231,7 +272,9 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 						if len(displayOutput) > 200 {
 							displayOutput = displayOutput[:200] + "... (已截断)"
 						}
-						rep.OnToolResult(ctx, item.call.Name, displayOutput, result.IsError)
+						if err := rep.OnToolResult(ctx, item.call.Name, displayOutput, result.IsError); err != nil {
+							setReportErr(err)
+						}
 					}
 
 					observationMsgs[item.index] = schema.Message{
@@ -259,6 +302,16 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 				)
 				session.Append(observationMsgs...)
 				return false, err
+			}
+
+			if reportErr != nil {
+				EnsureToolObservations(
+					actionResp.ToolCalls,
+					observationMsgs,
+					"工具调用已取消",
+				)
+				session.Append(observationMsgs...)
+				return false, reportErr
 			}
 
 			// 工具级超时/失败：作为 Observation 写入，Run 继续
@@ -334,7 +387,9 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 		}
 
 		if actionResp.Content != "" && rep != nil && !streamed {
-			rep.OnMessage(ctx, actionResp.Content)
+			if err := rep.OnMessage(ctx, actionResp.Content); err != nil {
+				return "", err
+			}
 		}
 
 		contextHistory = append(contextHistory, *actionResp)
@@ -349,6 +404,21 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 		var wg sync.WaitGroup
 
+		var (
+			reportMu  sync.Mutex
+			reportErr error
+		)
+		setReportErr := func(err error) {
+			if err == nil {
+				return
+			}
+			reportMu.Lock()
+			defer reportMu.Unlock()
+			if reportErr == nil {
+				reportErr = err
+			}
+		}
+
 		for i, toolCall := range actionResp.ToolCalls {
 			wg.Add(1)
 			go func(idx int, call schema.ToolCall) {
@@ -356,7 +426,15 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 
 				// 【可视化的关键】：让终端用户看到 Subagent 正在干嘛
 				if rep != nil {
-					rep.OnToolCall(ctx, fmt.Sprintf("[Subagent] %s", call.Name), string(call.Arguments))
+					if err := rep.OnToolCall(ctx, fmt.Sprintf("[Subagent] %s", call.Name), string(call.Arguments)); err != nil {
+						setReportErr(err)
+						observationMsgs[idx] = schema.Message{
+							Role:       schema.RoleUser,
+							Content:    "工具调用已取消",
+							ToolCallID: call.ID,
+						}
+						return
+					}
 				}
 
 				result := readOnlyRegistry.Execute(ctx, call)
@@ -371,7 +449,9 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 					if len(display) > 200 {
 						display = display[:200] + "... (已截断)"
 					}
-					rep.OnToolResult(ctx, fmt.Sprintf("[Subagent] %s", call.Name), display, result.IsError)
+					if err := rep.OnToolResult(ctx, fmt.Sprintf("[Subagent] %s", call.Name), display, result.IsError); err != nil {
+						setReportErr(err)
+					}
 				}
 
 				observationMsgs[idx] = schema.Message{
@@ -384,7 +464,14 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 
 		wg.Wait()
 		if err := ctx.Err(); err != nil {
+			EnsureToolObservations(actionResp.ToolCalls, observationMsgs, "工具调用已取消")
+			contextHistory = append(contextHistory, observationMsgs...)
 			return "", err
+		}
+		if reportErr != nil {
+			EnsureToolObservations(actionResp.ToolCalls, observationMsgs, "工具调用已取消")
+			contextHistory = append(contextHistory, observationMsgs...)
+			return "", reportErr
 		}
 		contextHistory = append(contextHistory, observationMsgs...)
 	}
