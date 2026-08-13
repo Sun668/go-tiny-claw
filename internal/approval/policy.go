@@ -1,5 +1,11 @@
 package approval
 
+import (
+	"encoding/json"
+
+	"github.com/Sun668/go-tiny-claw/internal/sandbox"
+)
+
 type PolicyDecision string
 
 const (
@@ -15,6 +21,10 @@ type Policy interface {
 type DefaultPolicy struct{}
 
 func (DefaultPolicy) Evaluate(req Request) PolicyDecision {
+	if req.ToolCall.Name == "bash" && isDeniedBash(req.ToolCall.Arguments) {
+		return PolicyDeny
+	}
+
 	switch req.Risk {
 	case RiskSafe:
 		return PolicyAutoAllow
@@ -23,4 +33,14 @@ func (DefaultPolicy) Evaluate(req Request) PolicyDecision {
 	default:
 		return PolicyDeny
 	}
+}
+
+func isDeniedBash(args json.RawMessage) bool {
+	var parsed struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(args, &parsed); err != nil {
+		return false
+	}
+	return sandbox.IsDestructiveCommand(parsed.Command)
 }

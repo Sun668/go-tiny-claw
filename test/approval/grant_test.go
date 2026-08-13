@@ -91,7 +91,7 @@ func TestAllowSessionDoesNotReuseDifferentArguments(t *testing.T) {
 		"session-1",
 		"/work",
 		"bash",
-		json.RawMessage(`{"command":"rm -rf /"}`),
+		json.RawMessage(`{"command":"go test ./..."}`),
 	)
 	decision, err := gate.Check(context.Background(), secondReq)
 	if err != nil {
