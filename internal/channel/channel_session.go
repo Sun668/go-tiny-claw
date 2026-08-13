@@ -20,7 +20,7 @@ type ChannelSession struct {
 	reader   *MessageReader
 	writer   *MessageWriter
 	reporter reporter.Reporter
-	events   reporter.EventSink
+	events   *JSONEventSink
 	approval *ChannelApprovalHandler
 
 	closeOnce sync.Once
@@ -187,6 +187,7 @@ func (s *ChannelSession) Interrupt() {
 func (s *ChannelSession) Close() error {
 	s.closeOnce.Do(func() {
 		destroyErr := s.manager.Destroy(s.id)
+		s.events.Close()
 		closeErr := s.conn.Close()
 
 		if destroyErr != nil &&
