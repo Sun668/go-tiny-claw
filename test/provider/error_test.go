@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Sun668/go-tiny-claw/internal/provider"
+	"github.com/openai/openai-go/v3"
 )
 
 type timeoutError struct{}
@@ -73,6 +74,50 @@ func TestClassifyError(t *testing.T) {
 			got := provider.ClassifyError(tc.err)
 			if got != tc.want {
 				t.Fatalf("ClassifyError(%v) = %s，期望 %s", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWrapOpenAIErrorClassifiesStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want provider.ErrorKind
+	}{
+		{
+			name: "429",
+			err:  &openai.Error{StatusCode: 429},
+			want: provider.ErrorKindRetryable,
+		},
+		{
+			name: "500",
+			err:  &openai.Error{StatusCode: 500},
+			want: provider.ErrorKindRetryable,
+		},
+		{
+			name: "401",
+			err:  &openai.Error{StatusCode: 401},
+			want: provider.ErrorKindFatal,
+		},
+		{
+			name: "普通错误",
+			err:  errors.New("构建参数失败"),
+			want: provider.ErrorKindFatal,
+		},
+		{
+			name: "取消",
+			err:  context.Canceled,
+			want: provider.ErrorKindCanceled,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := provider.WrapOpenAIError("OpenAI/Zhipu API 请求失败", tc.err)
+			got := provider.ClassifyError(wrapped)
+			if got != tc.want {
+				t.Fatalf("WrapOpenAIError 后分类为 %s，期望 %s", got, tc.want)
 			}
 		})
 	}

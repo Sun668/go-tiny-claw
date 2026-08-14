@@ -129,7 +129,7 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("OpenAI/Zhipu API 请求失败: %w", err)
+		return nil, WrapOpenAIError("OpenAI/Zhipu API 请求失败", err)
 	}
 	if len(resp.Choices) == 0 {
 		return nil, fmt.Errorf("API 返回了空的 Choices")
@@ -245,7 +245,7 @@ func (p *OpenAIProvider) GenerateStream(
 		if err := stream.Err(); err != nil {
 			if !sendStreamEvent(ctx, events, StreamEvent{
 				Type: StreamError,
-				Err:  fmt.Errorf("流式响应失败: %w", err),
+				Err:  WrapOpenAIError("流式响应失败", err),
 			}) {
 				return
 			}

@@ -23,9 +23,7 @@ func main() {
 	}
 	workDir += "/workspace"
 
-	llmProvider := provider.NewOpenAICompatibleProvider(
-		"glm-5-2-260617",
-	)
+	llmProvider := provider.NewRetryingProvider(provider.NewOpenAICompatibleProvider("glm-5-2-260617"))
 
 	factory := runtimepkg.NewRuntimeFactory(
 		llmProvider,
