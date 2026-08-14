@@ -13,6 +13,9 @@ type Grant struct {
 	WorkDir        string    `json:"work_dir"`
 	ExpiresAt      time.Time `json:"expires_at,omitempty"`
 	ArgumentDigest string    `json:"argument_digest"`
+	RequestID      string    `json:"request_id,omitempty"`
+	Decision       Decision  `json:"decision,omitempty"`
+	ApprovedAt     time.Time `json:"approved_at,omitempty"`
 }
 
 type GrantStore interface {

@@ -155,3 +155,70 @@ func TestFileGrantStoreWritesJSONFile(t *testing.T) {
 		t.Fatal("授权文件不应为空")
 	}
 }
+
+func TestFileGrantStorePersistsAuditFields(t *testing.T) {
+	workDir := t.TempDir()
+	store, err := approval.NewFileGrantStore(workDir)
+	if err != nil {
+		t.Fatalf("创建 FileGrantStore 失败: %v", err)
+	}
+
+	handler := &recordingHandler{decision: approval.AllowSession}
+	gate := newAskGate(handler, store)
+
+	req := mutatingRequest(
+		"session-1",
+		workDir,
+		"write_file",
+		json.RawMessage(`{"path":"a.go","content":"x"}`),
+	)
+	req.ID = "req-audit-1"
+
+	before := time.Now()
+	decision, err := gate.Check(context.Background(), req)
+	if err != nil {
+		t.Fatalf("审批失败: %v", err)
+	}
+	if decision != approval.AllowSession {
+		t.Fatalf("决策错误: %s", decision)
+	}
+
+	allowed, err := store.Has(context.Background(), req)
+	if err != nil {
+		t.Fatalf("查询 Grant 失败: %v", err)
+	}
+	if !allowed {
+		t.Fatal("AllowSession 后应能命中 Grant")
+	}
+
+	data, err := os.ReadFile(filepath.Join(workDir, ".claw", "grants.json"))
+	if err != nil {
+		t.Fatalf("读取授权文件失败: %v", err)
+	}
+
+	var grants []approval.Grant
+	if err := json.Unmarshal(data, &grants); err != nil {
+		t.Fatalf("解析授权文件失败: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("应写入 1 条 Grant，实际: %d", len(grants))
+	}
+
+	grant := grants[0]
+	if grant.RequestID != "req-audit-1" {
+		t.Fatalf("RequestID 错误: %s", grant.RequestID)
+	}
+	if grant.Decision != approval.AllowSession {
+		t.Fatalf("Decision 错误: %s", grant.Decision)
+	}
+	if grant.ApprovedAt.IsZero() {
+		t.Fatal("ApprovedAt 不能为零值")
+	}
+	if grant.ApprovedAt.Before(before.Add(-time.Second)) ||
+		grant.ApprovedAt.After(time.Now().Add(time.Second)) {
+		t.Fatalf("ApprovedAt 不在预期范围内: %s", grant.ApprovedAt)
+	}
+	if grant.ArgumentDigest != approval.DigestArguments(req.ToolCall.Arguments) {
+		t.Fatal("ArgumentDigest 应与请求参数一致")
+	}
+}

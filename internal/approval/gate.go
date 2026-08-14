@@ -1,6 +1,9 @@
 package approval
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Gate struct {
 	policy  Policy
@@ -37,6 +40,9 @@ func (g *Gate) Check(ctx context.Context, request Request) (Decision, error) {
 			WorkDir:        request.WorkDir,
 			ToolName:       request.ToolCall.Name,
 			ArgumentDigest: DigestArguments(request.ToolCall.Arguments),
+			RequestID:      request.ID,
+			Decision:       decision,
+			ApprovedAt:     time.Now(),
 		})
 	}
 
