@@ -82,3 +82,15 @@ func TestBashToolRunDeadlineBubbles(t *testing.T) {
 		t.Fatalf("Run 级超时应冒泡 DeadlineExceeded，实际: %v", err)
 	}
 }
+
+func TestBashToolRejectsWorkspaceEscape(t *testing.T) {
+	tool := tools.NewBashTool(t.TempDir())
+
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"cat /etc/passwd"}`))
+	if err == nil {
+		t.Fatal("逃出工作区的命令应失败")
+	}
+	if !strings.Contains(err.Error(), "工作区外") {
+		t.Fatalf("错误信息应说明访问工作区外，实际: %v", err)
+	}
+}

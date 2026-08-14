@@ -42,5 +42,5 @@ func isDeniedBash(args json.RawMessage) bool {
 	if err := json.Unmarshal(args, &parsed); err != nil {
 		return false
 	}
-	return sandbox.IsDestructiveCommand(parsed.Command)
+	return sandbox.IsDestructiveCommand(parsed.Command) || sandbox.CommandEscapesWorkspace(parsed.Command) != nil
 }

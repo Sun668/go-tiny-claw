@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
+	"github.com/Sun668/go-tiny-claw/internal/sandbox"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
 )
 
@@ -76,6 +77,10 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, t.toolTimeout())
 	defer cancel()
+
+	if err := sandbox.CommandEscapesWorkspace(input.Command); err != nil {
+		return "", fmt.Errorf("命令会逃离工作区: %w", err)
+	}
 
 	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", input.Command)
 	cmd.Dir = t.workDir

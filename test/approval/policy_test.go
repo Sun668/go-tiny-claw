@@ -49,6 +49,25 @@ func TestDefaultPolicyDeniesDestructiveBash(t *testing.T) {
 	}
 }
 
+func TestDefaultPolicyDeniesEscapingBash(t *testing.T) {
+	policy := approval.DefaultPolicy{}
+
+	cases := []string{
+		"cat /etc/passwd",
+		"cd ..",
+		"cd /tmp",
+		"ls ../../",
+		"cat foo/../../outside",
+	}
+
+	for _, command := range cases {
+		decision := policy.Evaluate(bashRequest(t, command))
+		if decision != approval.PolicyDeny {
+			t.Fatalf("命令 %q 应被拒绝，实际: %s", command, decision)
+		}
+	}
+}
+
 func TestDefaultPolicyAsksOrdinaryBash(t *testing.T) {
 	policy := approval.DefaultPolicy{}
 
@@ -88,6 +107,22 @@ func TestGateDeniesDestructiveBashWithoutHandler(t *testing.T) {
 	}
 	if decision != approval.Deny {
 		t.Fatalf("破坏性 bash 应直接拒绝，实际: %s", decision)
+	}
+	if handler.calls != 0 {
+		t.Fatalf("PolicyDeny 不应询问用户，Handler 调用次数: %d", handler.calls)
+	}
+}
+
+func TestGateDeniesEscapingBashWithoutHandler(t *testing.T) {
+	handler := &recordingHandler{decision: approval.AllowOnce}
+	gate := newAskGate(handler, approval.NewMemoryGrantStore())
+
+	decision, err := gate.Check(context.Background(), bashRequest(t, "cat /etc/passwd"))
+	if err != nil {
+		t.Fatalf("审批失败: %v", err)
+	}
+	if decision != approval.Deny {
+		t.Fatalf("逃出工作区的 bash 应直接拒绝，实际: %s", decision)
 	}
 	if handler.calls != 0 {
 		t.Fatalf("PolicyDeny 不应询问用户，Handler 调用次数: %d", handler.calls)
