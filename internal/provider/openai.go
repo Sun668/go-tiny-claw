@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -28,6 +29,21 @@ func NewOpenAICompatibleProvider(model string) *OpenAIProvider {
 		client: openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
 		model:  model,
 	}
+}
+
+func WrapOpenAIError(prefix string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) {
+		err = &HTTPError{
+			StatusCode: apiErr.StatusCode,
+			Err:        err,
+		}
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
 }
 
 func (p *OpenAIProvider) buildParams(msgs []schema.Message, availableTools []schema.ToolDefinition) (openai.ChatCompletionNewParams, error) {
