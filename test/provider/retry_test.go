@@ -3,7 +3,9 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Sun668/go-tiny-claw/internal/provider"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
@@ -252,5 +254,54 @@ func TestRetryingProviderDoesNotRetryFatalStream(t *testing.T) {
 	}
 	if stub.used != 1 {
 		t.Fatalf("不可重试错误只应调用 1 次，实际: %d", stub.used)
+	}
+}
+
+type blockingProvider struct {
+	calls int
+}
+
+func (p *blockingProvider) Generate(
+	ctx context.Context,
+	_ []schema.Message,
+	_ []schema.ToolDefinition,
+) (*schema.Message, error) {
+	p.calls++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestRetryingProviderRetriesAttemptTimeout(t *testing.T) {
+	stub := &blockingProvider{}
+	retry := newRetry(stub)
+	retry.MaxAttempts = 2
+	retry.CallTimeout = 20 * time.Millisecond
+
+	_, err := retry.Generate(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("单次调用超时用尽后应失败")
+	}
+	if !strings.Contains(err.Error(), "模型调用超时") {
+		t.Fatalf("错误信息应说明模型调用超时，实际: %v", err)
+	}
+	if stub.calls != 2 {
+		t.Fatalf("超时应重试，实际调用: %d", stub.calls)
+	}
+}
+
+func TestRetryingProviderDoesNotRetryParentCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	stub := &blockingProvider{}
+	retry := newRetry(stub)
+	retry.CallTimeout = time.Second
+
+	_, err := retry.Generate(ctx, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("父 ctx 取消应返回 Canceled，实际: %v", err)
+	}
+	if stub.calls != 0 {
+		t.Fatalf("父 ctx 已取消不应开打，实际调用: %d", stub.calls)
 	}
 }
