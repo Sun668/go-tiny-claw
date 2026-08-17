@@ -39,6 +39,12 @@ func (s *Session) RecordUsage(prompt int, completion int, cost float64) {
 	s.TotalCostCNY += cost
 }
 
+func (s *Session) TotalTokens() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.TotalPromptTokens + s.TotalCompletionTokens
+}
+
 func (s *Session) Append(msgs ...schema.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -94,9 +100,9 @@ func (sm *SessionManager) GetOrCreate(id string, workDir string) *Session {
 }
 
 func (s *Session) Clear() {
-    s.mu.Lock()
-    defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-    s.history = s.history[:0]
-    s.UpdatedAt = time.Now()
+	s.history = s.history[:0]
+	s.UpdatedAt = time.Now()
 }

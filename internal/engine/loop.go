@@ -27,6 +27,7 @@ type AgentEngine struct {
 	MaxTurns           int
 	approvalGate       *approval.Gate
 	MaxToolConcurrency int
+	MaxTokens          int
 }
 
 type IndexedToolCall struct {
@@ -47,6 +48,32 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, approvalGate *appr
 		approvalGate:       approvalGate,
 		MaxToolConcurrency: 8,
 	}
+}
+
+func (e *AgentEngine) checkBudget(session *ctxpkg.Session) error {
+	if e.MaxTokens <= 0 || session == nil {
+		return nil
+	}
+	used := session.TotalTokens()
+	if used >= e.MaxTokens {
+		return fmt.Errorf("已超过本次任务的 Token 预算（已用 %d，上限 %d）", used, e.MaxTokens)
+	}
+	return nil
+}
+
+func (e *AgentEngine) recordUsage(session *ctxpkg.Session, msg *schema.Message) {
+	if session == nil || msg == nil || msg.Usage == nil {
+		return
+	}
+	session.RecordUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens, 0)
+}
+
+func recordSpanUsage(span *observability.Span, msg *schema.Message) {
+	if span == nil || msg == nil || msg.Usage == nil {
+		return
+	}
+	span.AddAttribute("prompt_tokens", msg.Usage.PromptTokens)
+	span.AddAttribute("completion_tokens", msg.Usage.CompletionTokens)
 }
 
 // internal/engine/loop.go
@@ -107,6 +134,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 				if err != nil {
 					return false, fmt.Errorf("Thinking 阶段失败: %w", err)
 				}
+				recordSpanUsage(thinkSpan, thinkResp)
 
 				if thinkResp.Content != "" && rep != nil && !streamed {
 					if err := rep.OnMessage(ctx, thinkResp.Content); err != nil {
@@ -132,6 +160,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 			if err != nil {
 				return false, fmt.Errorf("Action 阶段失败: %w", err)
 			}
+			recordSpanUsage(actSpan, actionResp)
 
 			// 【核心修正】：合并 Thinking 和 Action 的内容
 			// 构造一条唯一的、合规的 Assistant 消息
@@ -347,6 +376,8 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 // 它不依赖外部 Session，打完就跑。
 // Reporter：为了让用户在终端看到子智能体的工作轨迹，我们将主线程的 Reporter 透传进来，并打上特殊标记。
 func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyRegistry tools.Registry, rep reporter.Reporter) (string, error) {
+	ctx, rootSpan := observability.StartSpan(ctx, "Subagent.Run")
+	defer rootSpan.EndSpan()
 
 	// 【核心优化】：子智能体极其容易偷懒。我们必须在 System Prompt 中严厉警告它必须使用工具！
 	contextHistory := []schema.Message{
@@ -376,105 +407,119 @@ func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyReg
 			return "", fmt.Errorf("子智能体探索过于深入，超过 %d 轮被强制召回，请主 Agent 给它更明确的指令", maxSubTurns)
 		}
 
-		// 【驾驭底线】：子智能体仅能获取传入的只读工具注册表
-		availableTools := readOnlyRegistry.GetAvailableTools()
+		turnCtx, turnSpan := observability.StartSpan(ctx, fmt.Sprintf("Subagent.Turn-%d", turnCount))
+		summary, done, err := func() (string, bool, error) {
+			defer turnSpan.EndSpan()
 
-		compactedContext := e.compactor.Compact(contextHistory)
+			// 【驾驭底线】：子智能体仅能获取传入的只读工具注册表
+			availableTools := readOnlyRegistry.GetAvailableTools()
 
-		// 子任务要求急速响应，强制关闭主体的慢思考，直接预测行动
-		actionResp, streamed, err := e.generate(ctx, compactedContext, availableTools, rep, false)
-		if err != nil {
-			return "", fmt.Errorf("子智能体推理失败: %w", err)
-		}
+			compactedContext := e.compactor.Compact(contextHistory)
 
-		if actionResp.Content != "" && rep != nil && !streamed {
-			if err := rep.OnMessage(ctx, actionResp.Content); err != nil {
-				return "", err
+			// 子任务要求急速响应，强制关闭主体的慢思考，直接预测行动
+			actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
+			actionResp, streamed, err := e.generate(actCtx, compactedContext, availableTools, rep, false)
+			defer actSpan.EndSpan()
+			if err != nil {
+				return "", false, fmt.Errorf("子智能体推理失败: %w", err)
 			}
-		}
+			recordSpanUsage(actSpan, actionResp)
 
-		contextHistory = append(contextHistory, *actionResp)
-
-		// 【核心退出条件】：子智能体一旦不调用工具了，说明它做好了总结汇报
-		if len(actionResp.ToolCalls) == 0 {
-			// 直接将它的这段汇报内容剥离出来返回给上层
-			return actionResp.Content, nil
-		}
-
-		// 执行只读工具的并发循环
-		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
-		var wg sync.WaitGroup
-
-		var (
-			reportMu  sync.Mutex
-			reportErr error
-		)
-		setReportErr := func(err error) {
-			if err == nil {
-				return
+			if actionResp.Content != "" && rep != nil && !streamed {
+				if err := rep.OnMessage(ctx, actionResp.Content); err != nil {
+					return "", false, err
+				}
 			}
-			reportMu.Lock()
-			defer reportMu.Unlock()
-			if reportErr == nil {
-				reportErr = err
+
+			contextHistory = append(contextHistory, *actionResp)
+
+			// 【核心退出条件】：子智能体一旦不调用工具了，说明它做好了总结汇报
+			if len(actionResp.ToolCalls) == 0 {
+				return actionResp.Content, true, nil
 			}
-		}
 
-		for i, toolCall := range actionResp.ToolCalls {
-			wg.Add(1)
-			go func(idx int, call schema.ToolCall) {
-				defer wg.Done()
+			// 执行只读工具的并发循环
+			observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
+			var wg sync.WaitGroup
 
-				// 【可视化的关键】：让终端用户看到 Subagent 正在干嘛
-				if rep != nil {
-					if err := rep.OnToolCall(ctx, fmt.Sprintf("[Subagent] %s", call.Name), string(call.Arguments)); err != nil {
-						setReportErr(err)
-						observationMsgs[idx] = schema.Message{
-							Role:       schema.RoleUser,
-							Content:    "工具调用已取消",
-							ToolCallID: call.ID,
+			var (
+				reportMu  sync.Mutex
+				reportErr error
+			)
+			setReportErr := func(err error) {
+				if err == nil {
+					return
+				}
+				reportMu.Lock()
+				defer reportMu.Unlock()
+				if reportErr == nil {
+					reportErr = err
+				}
+			}
+
+			for i, toolCall := range actionResp.ToolCalls {
+				wg.Add(1)
+				go func(idx int, call schema.ToolCall) {
+					defer wg.Done()
+
+					// 【可视化的关键】：让终端用户看到 Subagent 正在干嘛
+					if rep != nil {
+						if err := rep.OnToolCall(ctx, fmt.Sprintf("[Subagent] %s", call.Name), string(call.Arguments)); err != nil {
+							setReportErr(err)
+							observationMsgs[idx] = schema.Message{
+								Role:       schema.RoleUser,
+								Content:    "工具调用已取消",
+								ToolCallID: call.ID,
+							}
+							return
 						}
-						return
 					}
-				}
 
-				result := readOnlyRegistry.Execute(ctx, call)
+					result := readOnlyRegistry.Execute(turnCtx, call)
 
-				finalOutput := result.Output
-				if result.IsError {
-					finalOutput = e.recovery.AnalyzeAndInject(call.Name, result.Output)
-				}
-
-				if rep != nil {
-					display := finalOutput
-					if len(display) > 200 {
-						display = display[:200] + "... (已截断)"
+					finalOutput := result.Output
+					if result.IsError {
+						finalOutput = e.recovery.AnalyzeAndInject(call.Name, result.Output)
 					}
-					if err := rep.OnToolResult(ctx, fmt.Sprintf("[Subagent] %s", call.Name), display, result.IsError); err != nil {
-						setReportErr(err)
+
+					if rep != nil {
+						display := finalOutput
+						if len(display) > 200 {
+							display = display[:200] + "... (已截断)"
+						}
+						if err := rep.OnToolResult(ctx, fmt.Sprintf("[Subagent] %s", call.Name), display, result.IsError); err != nil {
+							setReportErr(err)
+						}
 					}
-				}
 
-				observationMsgs[idx] = schema.Message{
-					Role:       schema.RoleUser,
-					Content:    finalOutput,
-					ToolCallID: call.ID,
-				}
-			}(i, toolCall)
-		}
+					observationMsgs[idx] = schema.Message{
+						Role:       schema.RoleUser,
+						Content:    finalOutput,
+						ToolCallID: call.ID,
+					}
+				}(i, toolCall)
+			}
 
-		wg.Wait()
-		if err := ctx.Err(); err != nil {
-			EnsureToolObservations(actionResp.ToolCalls, observationMsgs, "工具调用已取消")
+			wg.Wait()
+			if err := ctx.Err(); err != nil {
+				EnsureToolObservations(actionResp.ToolCalls, observationMsgs, "工具调用已取消")
+				contextHistory = append(contextHistory, observationMsgs...)
+				return "", false, err
+			}
+			if reportErr != nil {
+				EnsureToolObservations(actionResp.ToolCalls, observationMsgs, "工具调用已取消")
+				contextHistory = append(contextHistory, observationMsgs...)
+				return "", false, reportErr
+			}
 			contextHistory = append(contextHistory, observationMsgs...)
+			return "", false, nil
+		}()
+		if err != nil {
 			return "", err
 		}
-		if reportErr != nil {
-			EnsureToolObservations(actionResp.ToolCalls, observationMsgs, "工具调用已取消")
-			contextHistory = append(contextHistory, observationMsgs...)
-			return "", reportErr
+		if done {
+			return summary, nil
 		}
-		contextHistory = append(contextHistory, observationMsgs...)
 	}
 }
 
