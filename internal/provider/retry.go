@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -17,6 +18,8 @@ type RetryingProvider struct {
 	next        LLMProvider
 	MaxAttempts int
 	Backoff     time.Duration
+	MaxBackoff  time.Duration
+	CallTimeout time.Duration
 }
 
 func NewRetryingProvider(next LLMProvider) *RetryingProvider {
@@ -24,6 +27,8 @@ func NewRetryingProvider(next LLMProvider) *RetryingProvider {
 		next:        next,
 		MaxAttempts: defaultRetryAttempts,
 		Backoff:     defaultRetryBackoff,
+		MaxBackoff:  2 * time.Second,
+		CallTimeout: 60 * time.Second,
 	}
 }
 
@@ -40,16 +45,25 @@ func (p *RetryingProvider) Generate(
 			return nil, err
 		}
 
-		message, err := p.next.Generate(ctx, messages, availableTools)
+		attemptCtx, cancelAttempt := p.attemptContext(ctx)
+		message, err := p.next.Generate(attemptCtx, messages, availableTools)
+		cancelAttempt()
 		if err == nil {
 			return message, nil
 		}
 
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf("模型调用超时: %w", err)
+		}
+
 		last = err
-		if ClassifyError(err) != ErrorKindRetryable || i == attempts {
+		if !p.shouldRetry(err) || i == attempts {
 			return nil, err
 		}
-		if err := p.wait(ctx); err != nil {
+		if err := p.wait(ctx, i); err != nil {
 			return nil, err
 		}
 	}
@@ -101,10 +115,19 @@ func (p *RetryingProvider) replayStream(
 			return
 		}
 
-		inner, err := streamer.GenerateStream(ctx, messages, tools)
+		attemptCtx, cancelAttempt := p.attemptContext(ctx)
+		inner, err := streamer.GenerateStream(attemptCtx, messages, tools)
 		if err != nil {
-			if ClassifyError(err) == ErrorKindRetryable && i < attempts {
-				if waitErr := p.wait(ctx); waitErr != nil {
+			cancelAttempt()
+			if ctx.Err() != nil {
+				sendStreamEvent(ctx, out, StreamEvent{Type: StreamError, Err: ctx.Err()})
+				return
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = fmt.Errorf("模型调用超时: %w", err)
+			}
+			if p.shouldRetry(err) && i < attempts {
+				if waitErr := p.wait(ctx, i); waitErr != nil {
 					sendStreamEvent(ctx, out, StreamEvent{Type: StreamError, Err: waitErr})
 					return
 				}
@@ -116,30 +139,49 @@ func (p *RetryingProvider) replayStream(
 
 		forwarded := false
 		retry := false
+		done := false
 
-		for event := range inner {
-			if event.Type == StreamError {
-				if !forwarded && ClassifyError(event.Err) == ErrorKindRetryable && i < attempts {
-					retry = true
-					break
+		func() {
+			defer cancelAttempt()
+			for event := range inner {
+				if event.Type == StreamError {
+					if ctx.Err() != nil {
+						sendStreamEvent(ctx, out, StreamEvent{Type: StreamError, Err: ctx.Err()})
+						done = true
+						return
+					}
+					if errors.Is(event.Err, context.DeadlineExceeded) {
+						event.Err = fmt.Errorf("模型调用超时: %w", event.Err)
+					}
+					if !forwarded && p.shouldRetry(event.Err) && i < attempts {
+						retry = true
+						return
+					}
+					sendStreamEvent(ctx, out, event)
+					done = true
+					return
 				}
-				sendStreamEvent(ctx, out, event)
-				return
-			}
 
-			if event.Type == StreamTextDelta || event.Type == StreamCompleted {
-				forwarded = true
+				if event.Type == StreamTextDelta || event.Type == StreamCompleted {
+					forwarded = true
+				}
+				if !sendStreamEvent(ctx, out, event) {
+					done = true
+					return
+				}
+				if event.Type == StreamCompleted {
+					done = true
+					return
+				}
 			}
-			if !sendStreamEvent(ctx, out, event) {
-				return
-			}
-			if event.Type == StreamCompleted {
-				return
-			}
+		}()
+
+		if done {
+			return
 		}
 
 		if retry {
-			if waitErr := p.wait(ctx); waitErr != nil {
+			if waitErr := p.wait(ctx, i); waitErr != nil {
 				sendStreamEvent(ctx, out, StreamEvent{Type: StreamError, Err: waitErr})
 				return
 			}
@@ -155,7 +197,7 @@ func (p *RetryingProvider) replayStream(
 		}
 
 		if i < attempts {
-			if waitErr := p.wait(ctx); waitErr != nil {
+			if waitErr := p.wait(ctx, i); waitErr != nil {
 				sendStreamEvent(ctx, out, StreamEvent{Type: StreamError, Err: waitErr})
 				return
 			}
@@ -177,12 +219,54 @@ func (p *RetryingProvider) attempts() int {
 	return defaultRetryAttempts
 }
 
-func (p *RetryingProvider) wait(ctx context.Context) error {
-	if p.Backoff <= 0 {
+func (p *RetryingProvider) maxBackoff() time.Duration {
+	if p.MaxBackoff > 0 {
+		return p.MaxBackoff
+	}
+	return 2 * time.Second
+}
+
+func (p *RetryingProvider) backoffDelay(failedAttempt int) time.Duration {
+	if p.Backoff <= 0 || failedAttempt <= 0 {
+		return 0
+	}
+	delay := p.Backoff
+	for i := 1; i < failedAttempt; i++ {
+		if delay > p.maxBackoff()/2 {
+			return p.maxBackoff()
+		}
+		delay *= 2
+	}
+	if delay > p.maxBackoff() {
+		return p.maxBackoff()
+	}
+	return delay
+}
+
+func (p *RetryingProvider) shouldRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return ClassifyError(err) == ErrorKindRetryable
+}
+
+func (p *RetryingProvider) attemptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if p.CallTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, p.CallTimeout)
+}
+
+func (p *RetryingProvider) wait(ctx context.Context, failedAttempt int) error {
+	delay := p.backoffDelay(failedAttempt)
+	if delay <= 0 {
 		return ctx.Err()
 	}
 
-	timer := time.NewTimer(p.Backoff)
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 
 	select {
