@@ -67,6 +67,7 @@ func (f *RuntimeFactory) NewRuntime(sessionID string, options RuntimeOptions) (*
 	)
 
 	agentEngine := engine.NewAgentEngine(f.provider, registry, approvalGate, false, false)
+	agentEngine.MaxTokens = 200000
 
 	agentRuntime := NewRuntime(agentEngine, session)
 

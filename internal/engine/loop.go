@@ -126,6 +126,10 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 					}
 				}
 
+				if err := e.checkBudget(session); err != nil {
+					return false, err
+				}
+
 				thinkCtx, thinkSpan := observability.StartSpan(turnCtx, "LLM.Thinking")
 				thinkResp, streamed, err := e.generate(thinkCtx, compactedContext, nil, rep, true)
 
@@ -134,6 +138,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 				if err != nil {
 					return false, fmt.Errorf("Thinking 阶段失败: %w", err)
 				}
+				e.recordUsage(session, thinkResp)
 				recordSpanUsage(thinkSpan, thinkResp)
 
 				if thinkResp.Content != "" && rep != nil && !streamed {
@@ -153,6 +158,9 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 			}
 
 			// ================= Phase 2: Action =================
+			if err := e.checkBudget(session); err != nil {
+				return false, err
+			}
 			actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
 			actionResp, streamed, err := e.generate(actCtx, compactedContext, availableTools, rep, true)
 			defer actSpan.EndSpan() // 结束行动跨度
@@ -160,6 +168,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 			if err != nil {
 				return false, fmt.Errorf("Action 阶段失败: %w", err)
 			}
+			e.recordUsage(session, actionResp)
 			recordSpanUsage(actSpan, actionResp)
 
 			// 【核心修正】：合并 Thinking 和 Action 的内容
