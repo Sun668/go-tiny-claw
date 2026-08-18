@@ -35,6 +35,7 @@ func (p *stubProvider) Generate(
 func newRetry(next provider.LLMProvider) *provider.RetryingProvider {
 	retry := provider.NewRetryingProvider(next)
 	retry.Backoff = 0
+	retry.FirstTokenTimeout = 0
 	return retry
 }
 
@@ -303,5 +304,145 @@ func TestRetryingProviderDoesNotRetryParentCancel(t *testing.T) {
 	}
 	if stub.calls != 0 {
 		t.Fatalf("父 ctx 已取消不应开打，实际调用: %d", stub.calls)
+	}
+}
+
+type slowFirstTokenProvider struct {
+	delay time.Duration
+	calls int
+}
+
+func (p *slowFirstTokenProvider) Generate(
+	context.Context,
+	[]schema.Message,
+	[]schema.ToolDefinition,
+) (*schema.Message, error) {
+	return nil, errors.New("不应走同步 Generate")
+}
+
+func (p *slowFirstTokenProvider) GenerateStream(
+	ctx context.Context,
+	_ []schema.Message,
+	_ []schema.ToolDefinition,
+) (<-chan provider.StreamEvent, error) {
+	p.calls++
+	events := make(chan provider.StreamEvent, 2)
+	go func() {
+		defer close(events)
+		select {
+		case <-ctx.Done():
+			events <- provider.StreamEvent{Type: provider.StreamError, Err: ctx.Err()}
+		case <-time.After(p.delay):
+			events <- provider.StreamEvent{Type: provider.StreamTextDelta, Text: "ok"}
+			events <- provider.StreamEvent{
+				Type: provider.StreamCompleted,
+				Message: &schema.Message{
+					Role:    schema.RoleAssistant,
+					Content: "ok",
+				},
+			}
+		}
+	}()
+	return events, nil
+}
+
+func TestRetryingProviderRetriesFirstTokenTimeout(t *testing.T) {
+	stub := &slowFirstTokenProvider{delay: time.Second}
+	retry := newRetry(stub)
+	retry.MaxAttempts = 2
+	retry.FirstTokenTimeout = 20 * time.Millisecond
+
+	events, err := retry.GenerateStream(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("生成流失败: %v", err)
+	}
+
+	collected := collectStream(t, events)
+	if len(collected) != 1 || collected[0].Type != provider.StreamError {
+		t.Fatalf("首 Token 超时用尽后应失败，实际: %+v", collected)
+	}
+	if !strings.Contains(collected[0].Err.Error(), "模型首 Token 超时") {
+		t.Fatalf("错误信息应说明首 Token 超时，实际: %v", collected[0].Err)
+	}
+	if stub.calls != 2 {
+		t.Fatalf("首 Token 超时应重试，实际调用: %d", stub.calls)
+	}
+}
+
+func TestRetryingProviderAcceptsFirstTokenInTime(t *testing.T) {
+	stub := &slowFirstTokenProvider{delay: 10 * time.Millisecond}
+	retry := newRetry(stub)
+	retry.FirstTokenTimeout = 200 * time.Millisecond
+
+	events, err := retry.GenerateStream(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("生成流失败: %v", err)
+	}
+
+	collected := collectStream(t, events)
+	if len(collected) != 2 || collected[0].Type != provider.StreamTextDelta {
+		t.Fatalf("按时出字应成功，实际: %+v", collected)
+	}
+	if stub.calls != 1 {
+		t.Fatalf("按时出字不应重试，实际调用: %d", stub.calls)
+	}
+}
+
+type hangAfterDeltaProvider struct {
+	calls int
+}
+
+func (p *hangAfterDeltaProvider) Generate(
+	context.Context,
+	[]schema.Message,
+	[]schema.ToolDefinition,
+) (*schema.Message, error) {
+	return nil, errors.New("不应走同步 Generate")
+}
+
+func (p *hangAfterDeltaProvider) GenerateStream(
+	ctx context.Context,
+	_ []schema.Message,
+	_ []schema.ToolDefinition,
+) (<-chan provider.StreamEvent, error) {
+	p.calls++
+	events := make(chan provider.StreamEvent, 2)
+	go func() {
+		defer close(events)
+		events <- provider.StreamEvent{Type: provider.StreamTextDelta, Text: "hello"}
+		<-ctx.Done()
+		events <- provider.StreamEvent{Type: provider.StreamError, Err: ctx.Err()}
+	}()
+	return events, nil
+}
+
+func TestRetryingProviderDoesNotTreatSlowTailAsFirstTokenTimeout(t *testing.T) {
+	stub := &hangAfterDeltaProvider{}
+	retry := newRetry(stub)
+	retry.MaxAttempts = 2
+	retry.FirstTokenTimeout = 20 * time.Millisecond
+	retry.CallTimeout = 50 * time.Millisecond
+
+	events, err := retry.GenerateStream(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("生成流失败: %v", err)
+	}
+
+	collected := collectStream(t, events)
+	if stub.calls != 1 {
+		t.Fatalf("已吐字后不应因首 Token 计时器再打，实际调用: %d", stub.calls)
+	}
+	if len(collected) < 2 || collected[0].Type != provider.StreamTextDelta {
+		t.Fatalf("应先看到已吐出的字，实际: %+v", collected)
+	}
+	last := collected[len(collected)-1]
+	if last.Type != provider.StreamError {
+		t.Fatalf("尾包超时应是 StreamError，实际: %+v", last)
+	}
+	if strings.Contains(last.Err.Error(), "模型首 Token 超时") {
+		t.Fatalf("已吐字后的超时不应写成首 Token，实际: %v", last.Err)
+	}
+	if !strings.Contains(last.Err.Error(), "模型调用超时") {
+		t.Fatalf("尾包超时应说明模型调用超时，实际: %v", last.Err)
 	}
 }

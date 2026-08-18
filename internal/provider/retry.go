@@ -10,25 +10,30 @@ import (
 )
 
 const (
-	defaultRetryAttempts = 3
-	defaultRetryBackoff  = 200 * time.Millisecond
+	defaultRetryAttempts     = 3
+	defaultRetryBackoff      = 200 * time.Millisecond
+	defaultMaxBackoff        = 2 * time.Second
+	defaultCallTimeout       = 60 * time.Second
+	defaultFirstTokenTimeout = 15 * time.Second
 )
 
 type RetryingProvider struct {
-	next        LLMProvider
-	MaxAttempts int
-	Backoff     time.Duration
-	MaxBackoff  time.Duration
-	CallTimeout time.Duration
+	next              LLMProvider
+	MaxAttempts       int
+	Backoff           time.Duration
+	MaxBackoff        time.Duration
+	CallTimeout       time.Duration
+	FirstTokenTimeout time.Duration
 }
 
 func NewRetryingProvider(next LLMProvider) *RetryingProvider {
 	return &RetryingProvider{
-		next:        next,
-		MaxAttempts: defaultRetryAttempts,
-		Backoff:     defaultRetryBackoff,
-		MaxBackoff:  2 * time.Second,
-		CallTimeout: 60 * time.Second,
+		next:              next,
+		MaxAttempts:       defaultRetryAttempts,
+		Backoff:           defaultRetryBackoff,
+		MaxBackoff:        defaultMaxBackoff,
+		CallTimeout:       defaultCallTimeout,
+		FirstTokenTimeout: defaultFirstTokenTimeout,
 	}
 }
 
@@ -143,35 +148,79 @@ func (p *RetryingProvider) replayStream(
 
 		func() {
 			defer cancelAttempt()
-			for event := range inner {
-				if event.Type == StreamError {
+
+			var firstTokenTimer *time.Timer
+			var firstToken <-chan time.Time
+
+			if p.FirstTokenTimeout > 0 {
+				firstTokenTimer = time.NewTimer(p.FirstTokenTimeout)
+				defer firstTokenTimer.Stop()
+				firstToken = firstTokenTimer.C
+			}
+
+			stopFirstToken := func() {
+				if firstTokenTimer == nil {
+					return
+				}
+				firstTokenTimer.Stop()
+				firstTokenTimer = nil
+				firstToken = nil
+			}
+
+			for {
+				select {
+				case <-ctx.Done():
+					sendStreamEvent(ctx, out, StreamEvent{Type: StreamError, Err: ctx.Err()})
+					done = true
+					return
+				case <-firstToken:
 					if ctx.Err() != nil {
 						sendStreamEvent(ctx, out, StreamEvent{Type: StreamError, Err: ctx.Err()})
 						done = true
 						return
 					}
-					if errors.Is(event.Err, context.DeadlineExceeded) {
-						event.Err = fmt.Errorf("模型调用超时: %w", event.Err)
-					}
-					if !forwarded && p.shouldRetry(event.Err) && i < attempts {
+					err := fmt.Errorf("模型首 Token 超时: %w", context.DeadlineExceeded)
+					if p.shouldRetry(err) && i < attempts {
 						retry = true
 						return
 					}
-					sendStreamEvent(ctx, out, event)
+					sendStreamEvent(ctx, out, StreamEvent{Type: StreamError, Err: err})
 					done = true
 					return
-				}
+				case event, ok := <-inner:
+					if !ok {
+						return
+					}
+					stopFirstToken()
+					if event.Type == StreamError {
+						if ctx.Err() != nil {
+							sendStreamEvent(ctx, out, StreamEvent{Type: StreamError, Err: ctx.Err()})
+							done = true
+							return
+						}
+						if errors.Is(event.Err, context.DeadlineExceeded) {
+							event.Err = fmt.Errorf("模型调用超时: %w", event.Err)
+						}
+						if !forwarded && p.shouldRetry(event.Err) && i < attempts {
+							retry = true
+							return
+						}
+						sendStreamEvent(ctx, out, event)
+						done = true
+						return
+					}
 
-				if event.Type == StreamTextDelta || event.Type == StreamCompleted {
-					forwarded = true
-				}
-				if !sendStreamEvent(ctx, out, event) {
-					done = true
-					return
-				}
-				if event.Type == StreamCompleted {
-					done = true
-					return
+					if event.Type == StreamTextDelta || event.Type == StreamCompleted {
+						forwarded = true
+					}
+					if !sendStreamEvent(ctx, out, event) {
+						done = true
+						return
+					}
+					if event.Type == StreamCompleted {
+						done = true
+						return
+					}
 				}
 			}
 		}()
@@ -223,7 +272,7 @@ func (p *RetryingProvider) maxBackoff() time.Duration {
 	if p.MaxBackoff > 0 {
 		return p.MaxBackoff
 	}
-	return 2 * time.Second
+	return defaultMaxBackoff
 }
 
 func (p *RetryingProvider) backoffDelay(failedAttempt int) time.Duration {
