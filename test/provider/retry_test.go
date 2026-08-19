@@ -228,6 +228,14 @@ func TestRetryingProviderDoesNotRetryStreamAfterDelta(t *testing.T) {
 	if collected[1].Type != provider.StreamError {
 		t.Fatalf("已吐字后的失败应原样转发，实际: %+v", collected[1])
 	}
+	var partial *provider.PartialResponseError
+	if !errors.As(collected[1].Err, &partial) {
+		t.Fatalf("已吐字后的失败应是半响应，实际: %v", collected[1].Err)
+	}
+	var httpErr *provider.HTTPError
+	if !errors.As(collected[1].Err, &httpErr) || httpErr.StatusCode != 429 {
+		t.Fatalf("半响应应保留原来的 429，实际: %v", collected[1].Err)
+	}
 	if stub.used != 1 {
 		t.Fatalf("已吐字后不应再次调用，实际: %d", stub.used)
 	}
@@ -439,10 +447,41 @@ func TestRetryingProviderDoesNotTreatSlowTailAsFirstTokenTimeout(t *testing.T) {
 	if last.Type != provider.StreamError {
 		t.Fatalf("尾包超时应是 StreamError，实际: %+v", last)
 	}
+	var partial *provider.PartialResponseError
+	if !errors.As(last.Err, &partial) {
+		t.Fatalf("已吐字后的超时应是半响应，实际: %v", last.Err)
+	}
 	if strings.Contains(last.Err.Error(), "模型首 Token 超时") {
 		t.Fatalf("已吐字后的超时不应写成首 Token，实际: %v", last.Err)
 	}
 	if !strings.Contains(last.Err.Error(), "模型调用超时") {
 		t.Fatalf("尾包超时应说明模型调用超时，实际: %v", last.Err)
+	}
+}
+
+func TestRetryingProviderMarksPartialWhenStreamEndsAfterDelta(t *testing.T) {
+	stub := &stubStreamProvider{
+		calls: []streamCall{
+			{events: []provider.StreamEvent{
+				{Type: provider.StreamTextDelta, Text: "hello"},
+			}},
+		},
+	}
+
+	events, err := newRetry(stub).GenerateStream(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("生成流失败: %v", err)
+	}
+
+	collected := collectStream(t, events)
+	if len(collected) != 2 || collected[0].Text != "hello" {
+		t.Fatalf("应先看到已吐出的字，实际: %+v", collected)
+	}
+	var partial *provider.PartialResponseError
+	if collected[1].Type != provider.StreamError || !errors.As(collected[1].Err, &partial) {
+		t.Fatalf("吐字后空结束应是半响应，实际: %+v", collected[1])
+	}
+	if stub.used != 1 {
+		t.Fatalf("半响应不应重试，实际调用: %d", stub.used)
 	}
 }

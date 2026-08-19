@@ -67,6 +67,16 @@ func TestClassifyError(t *testing.T) {
 			err:  context.DeadlineExceeded,
 			want: provider.ErrorKindCanceled,
 		},
+		{
+			name: "半响应包着 429",
+			err:  &provider.PartialResponseError{Err: &provider.HTTPError{StatusCode: 429}},
+			want: provider.ErrorKindFatal,
+		},
+		{
+			name: "半响应包着截止",
+			err:  &provider.PartialResponseError{Err: context.DeadlineExceeded},
+			want: provider.ErrorKindFatal,
+		},
 	}
 
 	for _, tc := range cases {

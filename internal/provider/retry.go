@@ -205,6 +205,9 @@ func (p *RetryingProvider) replayStream(
 							retry = true
 							return
 						}
+						if forwarded {
+							event.Err = wrapPartial(event.Err)
+						}
 						sendStreamEvent(ctx, out, event)
 						done = true
 						return
@@ -240,7 +243,7 @@ func (p *RetryingProvider) replayStream(
 		if forwarded {
 			sendStreamEvent(ctx, out, StreamEvent{
 				Type: StreamError,
-				Err:  fmt.Errorf("流式响应未返回最终消息"),
+				Err:  wrapPartial(fmt.Errorf("流式响应未返回最终消息")),
 			})
 			return
 		}
