@@ -5,120 +5,13 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
 	"github.com/Sun668/go-tiny-claw/internal/observability"
-	"github.com/Sun668/go-tiny-claw/internal/provider"
 	"github.com/Sun668/go-tiny-claw/internal/reporter"
 	"github.com/Sun668/go-tiny-claw/internal/schema"
-	"github.com/Sun668/go-tiny-claw/internal/tools"
 )
-
-type AgentEngine struct {
-	provider           provider.LLMProvider
-	registry           tools.Registry
-	EnableThinking     bool
-	PlanMode           bool // 【新增】计划模式开关
-	compactor          *ctxpkg.Compactor
-	recovery           *RecoveryManager
-	injector           *ReminderInjector
-	MaxTurns           int
-	approvalGate       *approval.Gate
-	MaxToolConcurrency int
-	MaxTokens          int
-	MaxTokensPerRun    int
-	MaxSubagents       int
-	subagentMu         sync.Mutex
-	subagentUsed       int
-	MaxToolTime        time.Duration
-}
-
-type IndexedToolCall struct {
-	index int
-	call  schema.ToolCall
-}
-
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, approvalGate *approval.Gate, enableThinking bool, planMode bool) *AgentEngine {
-	return &AgentEngine{
-		provider:           p,
-		registry:           r,
-		EnableThinking:     enableThinking,
-		PlanMode:           planMode,
-		compactor:          ctxpkg.NewCompactor(20000, 6),
-		recovery:           NewRecoveryManager(),
-		injector:           NewReminderInjector(),
-		MaxTurns:           20,
-		approvalGate:       approvalGate,
-		MaxToolConcurrency: 8,
-	}
-}
-
-func (e *AgentEngine) checkBudget(session *ctxpkg.Session) error {
-	if e.MaxTokens <= 0 || session == nil {
-		return nil
-	}
-	used := session.TotalTokens()
-	if used >= e.MaxTokens {
-		return fmt.Errorf("已超过本会话的 Token 预算（已用 %d，上限 %d）", used, e.MaxTokens)
-	}
-	return nil
-}
-
-func (e *AgentEngine) checkRunBudget(session *ctxpkg.Session, runStart int) error {
-	if e.MaxTokensPerRun <= 0 || session == nil {
-		return nil
-	}
-	used := session.TotalTokens() - runStart
-	if used >= e.MaxTokensPerRun {
-		return fmt.Errorf("已超过本次运行的 Token 预算（已用 %d，上限 %d）", used, e.MaxTokensPerRun)
-	}
-	return nil
-}
-
-func (e *AgentEngine) checkSubagentBudget() error {
-	if e.MaxSubagents <= 0 {
-		return nil
-	}
-	e.subagentMu.Lock()
-	defer e.subagentMu.Unlock()
-	if e.subagentUsed >= e.MaxSubagents {
-		return fmt.Errorf("已超过子智能体的数量上限（已用 %d，上限 %d）", e.subagentUsed, e.MaxSubagents)
-	}
-	e.subagentUsed++
-	return nil
-}
-
-func (e *AgentEngine) toolBatchContext(ctx context.Context, elapsed time.Duration) (context.Context, context.CancelFunc, error) {
-	if e.MaxToolTime <= 0 {
-		return ctx, func() {}, nil
-	}
-	remaining := e.MaxToolTime - elapsed
-	if remaining <= 0 {
-		return nil, nil, fmt.Errorf("已超过本次运行的工具时间预算（已用 %s，上限 %s）", elapsed, e.MaxToolTime)
-	}
-	ctx, cancel := context.WithTimeout(ctx, remaining)
-	return ctx, cancel, nil
-}
-
-func (e *AgentEngine) recordUsage(session *ctxpkg.Session, msg *schema.Message) {
-	if session == nil || msg == nil || msg.Usage == nil {
-		return
-	}
-	session.RecordUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens, 0)
-}
-
-func recordSpanUsage(span *observability.Span, msg *schema.Message) {
-	if span == nil || msg == nil || msg.Usage == nil {
-		return
-	}
-	span.AddAttribute("prompt_tokens", msg.Usage.PromptTokens)
-	span.AddAttribute("completion_tokens", msg.Usage.CompletionTokens)
-}
-
-// internal/engine/loop.go
 
 func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep reporter.Reporter) error {
 	log.Printf("[Engine] 唤醒会话 [%s]，工作区: %s\n", session.ID, session.WorkDir)
@@ -136,15 +29,11 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 	composer := ctxpkg.NewPromptComposer(session.WorkDir, e.PlanMode)
 	systemMsg := composer.Build()
 
-	runStart := 0
+	e.beginRunBudget(session)
+	defer e.endRunBudget()
 	e.subagentMu.Lock()
 	e.subagentUsed = 0
 	e.subagentMu.Unlock()
-	var toolElapsed time.Duration
-
-	if session != nil {
-		runStart = session.TotalTokens()
-	}
 
 	turnCount := 0
 
@@ -182,7 +71,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 					return false, err
 				}
 
-				if err := e.checkRunBudget(session, runStart); err != nil {
+				if err := e.checkRunBudget(session, e.runStart); err != nil {
 					return false, err
 				}
 
@@ -217,7 +106,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 			if err := e.checkBudget(session); err != nil {
 				return false, err
 			}
-			if err := e.checkRunBudget(session, runStart); err != nil {
+			if err := e.checkRunBudget(session, e.runStart); err != nil {
 				return false, err
 			}
 			actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
@@ -265,7 +154,6 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 			// ================= 执行工具并记录 Observation =================
 			observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 			approvedCalls := make([]IndexedToolCall, 0, len(actionResp.ToolCalls))
-			toolResults := make([]schema.ToolResult, len(actionResp.ToolCalls))
 
 			for i, toolCall := range actionResp.ToolCalls {
 				req := approval.Request{
@@ -298,149 +186,28 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 				}
 
 				approvedCalls = append(approvedCalls, IndexedToolCall{index: i, call: toolCall})
-
 			}
 
-			limit := e.MaxToolConcurrency
-			if limit <= 0 {
-				limit = 8
-			}
-
-			toolCtx, toolCancel, err := e.toolBatchContext(ctx, toolElapsed)
-			if err != nil {
-				EnsureToolObservations(
-					actionResp.ToolCalls,
-					observationMsgs,
-					"已超过本次运行的工具时间预算",
-				)
-				session.Append(observationMsgs...)
-				return false, err
-			}
-			defer toolCancel()
-
-			batchStart := time.Now()
-
-			var wg sync.WaitGroup
-			sem := make(chan struct{}, limit)
-
-			var (
-				reportMu  sync.Mutex
-				reportErr error
+			batch := e.runToolBatch(
+				ctx,
+				ctx,
+				actionResp.ToolCalls,
+				approvedCalls,
+				observationMsgs,
+				e.registry.Execute,
+				e.currentToolElapsed(),
+				e.addToolElapsed,
+				rep,
+				"",
 			)
-
-			setReportErr := func(err error) {
-				if err == nil {
-					return
-				}
-				reportMu.Lock()
-				defer reportMu.Unlock()
-				if reportErr == nil {
-					reportErr = err
-				}
+			if batch.err != nil {
+				session.Append(batch.observations...)
+				return false, batch.err
 			}
 
-			for _, item := range approvedCalls {
-				wg.Add(1)
-				go func(item IndexedToolCall) {
-					defer wg.Done()
+			session.Append(batch.observations...)
 
-					select {
-					case <-toolCtx.Done():
-						observationMsgs[item.index] = schema.Message{
-							Role:       schema.RoleUser,
-							Content:    "工具调用已取消",
-							ToolCallID: item.call.ID,
-						}
-						return
-					case sem <- struct{}{}:
-						defer func() {
-							<-sem
-						}()
-					}
-
-					if rep != nil {
-						if err := rep.OnToolCall(toolCtx, item.call.Name, string(item.call.Arguments)); err != nil {
-							setReportErr(err)
-							observationMsgs[item.index] = schema.Message{
-								Role:       schema.RoleUser,
-								Content:    "工具调用已取消",
-								ToolCallID: item.call.ID,
-							}
-							return
-						}
-					}
-					result := e.registry.Execute(toolCtx, item.call)
-
-					finalOutput := result.Output
-					if result.IsError {
-						finalOutput = e.recovery.AnalyzeAndInject(item.call.Name, finalOutput)
-						log.Printf(" -> [Go-%d] ❌ 注入救援指南: %s\n", item.index, finalOutput)
-					} else {
-						log.Printf(" -> [Go-%d] ✅ 工具执行成功 (返回 %d 字节)\n", item.index, len(result.Output))
-					}
-
-					if rep != nil {
-						displayOutput := result.Output
-						if len(displayOutput) > 200 {
-							displayOutput = displayOutput[:200] + "... (已截断)"
-						}
-						if err := rep.OnToolResult(toolCtx, item.call.Name, displayOutput, result.IsError); err != nil {
-							setReportErr(err)
-						}
-					}
-
-					observationMsgs[item.index] = schema.Message{
-						Role:       schema.RoleUser,
-						Content:    finalOutput,
-						ToolCallID: item.call.ID,
-					}
-
-					toolResults[item.index] = schema.ToolResult{
-						ToolCallID: result.ToolCallID,
-						Output:     finalOutput,
-						IsError:    result.IsError,
-					}
-				}(item)
-			}
-
-			wg.Wait()
-			toolElapsed += time.Since(batchStart)
-
-			// 用户取消或 Run 级超时：保留已完成结果，未完成的补取消 Observation，保持 ToolCall 成对
-			if err := ctx.Err(); err != nil {
-				EnsureToolObservations(
-					actionResp.ToolCalls,
-					observationMsgs,
-					"工具调用已取消",
-				)
-				session.Append(observationMsgs...)
-				return false, err
-			}
-
-			if reportErr != nil {
-				EnsureToolObservations(
-					actionResp.ToolCalls,
-					observationMsgs,
-					"工具调用已取消",
-				)
-				session.Append(observationMsgs...)
-				return false, reportErr
-			}
-
-			if err := toolCtx.Err(); err != nil {
-				EnsureToolObservations(
-					actionResp.ToolCalls,
-					observationMsgs,
-					"已超过本次运行的工具时间预算",
-				)
-				session.Append(observationMsgs...)
-				return false, fmt.Errorf("已超过本次运行的工具时间预算（已用 %s，上限 %s）", toolElapsed, e.MaxToolTime)
-			}
-
-			// 工具级超时/失败：作为 Observation 写入，Run 继续
-			session.Append(observationMsgs...)
-
-			for i, result := range toolResults {
+			for i, result := range batch.results {
 				reminderMsg := e.injector.CheckAndInject(
 					actionResp.ToolCalls[i],
 					result,
@@ -461,182 +228,4 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 	}
 
 	return nil
-}
-
-// internal/engine/loop.go (续加在末尾)
-
-// RunSub 是专为 Subagent 拉起的一次性受限循环。
-// 它不依赖外部 Session，打完就跑。
-// Reporter：为了让用户在终端看到子智能体的工作轨迹，我们将主线程的 Reporter 透传进来，并打上特殊标记。
-func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyRegistry tools.Registry, rep reporter.Reporter) (string, error) {
-	if err := e.checkSubagentBudget(); err != nil {
-		return "", err
-	}
-	ctx, rootSpan := observability.StartSpan(ctx, "Subagent.Run")
-	defer rootSpan.EndSpan()
-
-	// 【核心优化】：子智能体极其容易偷懒。我们必须在 System Prompt 中严厉警告它必须使用工具！
-	contextHistory := []schema.Message{
-		{
-			Role: schema.RoleSystem,
-			Content: `你是一个专门负责深度探索的探路者 (Explorer Subagent)。
-你的任务是根据主架构师的指令，在当前工作区内仔细阅读代码、查阅日志，搜集足够的信息。
-
-【核心纪律】
-1. 你必须、且只能依靠内置工具（如 bash 的 find/grep，或 read_file）去寻找答案。绝对不允许凭空捏造或猜测！
-2. 如果你没有找到确切的答案，你必须继续使用工具深入搜索。
-3. 当且仅当你找到了确切的线索后，停止调用工具，直接输出一段纯文本作为你的终极汇报。主架构师会根据你的汇报来做下一步决策。`,
-		},
-		{
-			Role:    schema.RoleUser,
-			Content: taskPrompt,
-		},
-	}
-
-	// 限制子智能体最多只能跑 10 个 Turn，防止它自己卡死
-	const maxSubTurns = 10
-	turnCount := 0
-
-	for {
-		turnCount++
-		if turnCount > maxSubTurns {
-			return "", fmt.Errorf("子智能体探索过于深入，超过 %d 轮被强制召回，请主 Agent 给它更明确的指令", maxSubTurns)
-		}
-
-		turnCtx, turnSpan := observability.StartSpan(ctx, fmt.Sprintf("Subagent.Turn-%d", turnCount))
-		summary, done, err := func() (string, bool, error) {
-			defer turnSpan.EndSpan()
-
-			// 【驾驭底线】：子智能体仅能获取传入的只读工具注册表
-			availableTools := readOnlyRegistry.GetAvailableTools()
-
-			compactedContext := e.compactor.Compact(contextHistory)
-
-			// 子任务要求急速响应，强制关闭主体的慢思考，直接预测行动
-			actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
-			actionResp, streamed, err := e.generate(actCtx, compactedContext, availableTools, rep, false)
-			defer actSpan.EndSpan()
-			if err != nil {
-				return "", false, fmt.Errorf("子智能体推理失败: %w", err)
-			}
-			recordSpanUsage(actSpan, actionResp)
-
-			if actionResp.Content != "" && rep != nil && !streamed {
-				if err := rep.OnMessage(ctx, actionResp.Content); err != nil {
-					return "", false, err
-				}
-			}
-
-			contextHistory = append(contextHistory, *actionResp)
-
-			// 【核心退出条件】：子智能体一旦不调用工具了，说明它做好了总结汇报
-			if len(actionResp.ToolCalls) == 0 {
-				return actionResp.Content, true, nil
-			}
-
-			// 执行只读工具的并发循环
-			observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
-			var wg sync.WaitGroup
-
-			var (
-				reportMu  sync.Mutex
-				reportErr error
-			)
-			setReportErr := func(err error) {
-				if err == nil {
-					return
-				}
-				reportMu.Lock()
-				defer reportMu.Unlock()
-				if reportErr == nil {
-					reportErr = err
-				}
-			}
-
-			for i, toolCall := range actionResp.ToolCalls {
-				wg.Add(1)
-				go func(idx int, call schema.ToolCall) {
-					defer wg.Done()
-
-					// 【可视化的关键】：让终端用户看到 Subagent 正在干嘛
-					if rep != nil {
-						if err := rep.OnToolCall(ctx, fmt.Sprintf("[Subagent] %s", call.Name), string(call.Arguments)); err != nil {
-							setReportErr(err)
-							observationMsgs[idx] = schema.Message{
-								Role:       schema.RoleUser,
-								Content:    "工具调用已取消",
-								ToolCallID: call.ID,
-							}
-							return
-						}
-					}
-
-					result := readOnlyRegistry.Execute(turnCtx, call)
-
-					finalOutput := result.Output
-					if result.IsError {
-						finalOutput = e.recovery.AnalyzeAndInject(call.Name, result.Output)
-					}
-
-					if rep != nil {
-						display := finalOutput
-						if len(display) > 200 {
-							display = display[:200] + "... (已截断)"
-						}
-						if err := rep.OnToolResult(ctx, fmt.Sprintf("[Subagent] %s", call.Name), display, result.IsError); err != nil {
-							setReportErr(err)
-						}
-					}
-
-					observationMsgs[idx] = schema.Message{
-						Role:       schema.RoleUser,
-						Content:    finalOutput,
-						ToolCallID: call.ID,
-					}
-				}(i, toolCall)
-			}
-
-			wg.Wait()
-			if err := ctx.Err(); err != nil {
-				EnsureToolObservations(actionResp.ToolCalls, observationMsgs, "工具调用已取消")
-				contextHistory = append(contextHistory, observationMsgs...)
-				return "", false, err
-			}
-			if reportErr != nil {
-				EnsureToolObservations(actionResp.ToolCalls, observationMsgs, "工具调用已取消")
-				contextHistory = append(contextHistory, observationMsgs...)
-				return "", false, reportErr
-			}
-			contextHistory = append(contextHistory, observationMsgs...)
-			return "", false, nil
-		}()
-		if err != nil {
-			return "", err
-		}
-		if done {
-			return summary, nil
-		}
-	}
-}
-
-// EnsureToolObservations 为尚未写入的 ToolCall 补齐 Observation。
-// 用于取消/中断路径：Assistant 消息若已带 ToolCalls 入库，必须成对补全，避免下一轮上下文断裂。
-func EnsureToolObservations(
-	toolCalls []schema.ToolCall,
-	observationMsgs []schema.Message,
-	content string,
-) {
-	for i, toolCall := range toolCalls {
-		if i >= len(observationMsgs) {
-			return
-		}
-		if observationMsgs[i].ToolCallID != "" {
-			continue
-		}
-		observationMsgs[i] = schema.Message{
-			Role:       schema.RoleUser,
-			Content:    content,
-			ToolCallID: toolCall.ID,
-		}
-	}
 }
