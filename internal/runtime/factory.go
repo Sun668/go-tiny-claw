@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
@@ -69,6 +70,8 @@ func (f *RuntimeFactory) NewRuntime(sessionID string, options RuntimeOptions) (*
 	agentEngine := engine.NewAgentEngine(f.provider, registry, approvalGate, false, false)
 	agentEngine.MaxTokens = 200000
 	agentEngine.MaxTokensPerRun = 100000
+	agentEngine.MaxSubagents = 3
+	agentEngine.MaxToolTime = 2 * time.Minute
 
 	agentRuntime := NewRuntime(agentEngine, session)
 

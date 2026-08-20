@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Sun668/go-tiny-claw/internal/approval"
 	ctxpkg "github.com/Sun668/go-tiny-claw/internal/context"
@@ -27,8 +28,12 @@ type AgentEngine struct {
 	MaxTurns           int
 	approvalGate       *approval.Gate
 	MaxToolConcurrency int
-	MaxTokens       int
-	MaxTokensPerRun int
+	MaxTokens          int
+	MaxTokensPerRun    int
+	MaxSubagents       int
+	subagentMu         sync.Mutex
+	subagentUsed       int
+	MaxToolTime        time.Duration
 }
 
 type IndexedToolCall struct {
@@ -73,6 +78,31 @@ func (e *AgentEngine) checkRunBudget(session *ctxpkg.Session, runStart int) erro
 	return nil
 }
 
+func (e *AgentEngine) checkSubagentBudget() error {
+	if e.MaxSubagents <= 0 {
+		return nil
+	}
+	e.subagentMu.Lock()
+	defer e.subagentMu.Unlock()
+	if e.subagentUsed >= e.MaxSubagents {
+		return fmt.Errorf("已超过子智能体的数量上限（已用 %d，上限 %d）", e.subagentUsed, e.MaxSubagents)
+	}
+	e.subagentUsed++
+	return nil
+}
+
+func (e *AgentEngine) toolBatchContext(ctx context.Context, elapsed time.Duration) (context.Context, context.CancelFunc, error) {
+	if e.MaxToolTime <= 0 {
+		return ctx, func() {}, nil
+	}
+	remaining := e.MaxToolTime - elapsed
+	if remaining <= 0 {
+		return nil, nil, fmt.Errorf("已超过本次运行的工具时间预算（已用 %s，上限 %s）", elapsed, e.MaxToolTime)
+	}
+	ctx, cancel := context.WithTimeout(ctx, remaining)
+	return ctx, cancel, nil
+}
+
 func (e *AgentEngine) recordUsage(session *ctxpkg.Session, msg *schema.Message) {
 	if session == nil || msg == nil || msg.Usage == nil {
 		return
@@ -107,6 +137,11 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 	systemMsg := composer.Build()
 
 	runStart := 0
+	e.subagentMu.Lock()
+	e.subagentUsed = 0
+	e.subagentMu.Unlock()
+	var toolElapsed time.Duration
+
 	if session != nil {
 		runStart = session.TotalTokens()
 	}
@@ -271,6 +306,20 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 				limit = 8
 			}
 
+			toolCtx, toolCancel, err := e.toolBatchContext(ctx, toolElapsed)
+			if err != nil {
+				EnsureToolObservations(
+					actionResp.ToolCalls,
+					observationMsgs,
+					"已超过本次运行的工具时间预算",
+				)
+				session.Append(observationMsgs...)
+				return false, err
+			}
+			defer toolCancel()
+
+			batchStart := time.Now()
+
 			var wg sync.WaitGroup
 			sem := make(chan struct{}, limit)
 
@@ -296,7 +345,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 					defer wg.Done()
 
 					select {
-					case <-ctx.Done():
+					case <-toolCtx.Done():
 						observationMsgs[item.index] = schema.Message{
 							Role:       schema.RoleUser,
 							Content:    "工具调用已取消",
@@ -310,7 +359,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 					}
 
 					if rep != nil {
-						if err := rep.OnToolCall(ctx, item.call.Name, string(item.call.Arguments)); err != nil {
+						if err := rep.OnToolCall(toolCtx, item.call.Name, string(item.call.Arguments)); err != nil {
 							setReportErr(err)
 							observationMsgs[item.index] = schema.Message{
 								Role:       schema.RoleUser,
@@ -320,7 +369,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 							return
 						}
 					}
-					result := e.registry.Execute(ctx, item.call)
+					result := e.registry.Execute(toolCtx, item.call)
 
 					finalOutput := result.Output
 					if result.IsError {
@@ -335,7 +384,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 						if len(displayOutput) > 200 {
 							displayOutput = displayOutput[:200] + "... (已截断)"
 						}
-						if err := rep.OnToolResult(ctx, item.call.Name, displayOutput, result.IsError); err != nil {
+						if err := rep.OnToolResult(toolCtx, item.call.Name, displayOutput, result.IsError); err != nil {
 							setReportErr(err)
 						}
 					}
@@ -355,6 +404,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 			}
 
 			wg.Wait()
+			toolElapsed += time.Since(batchStart)
 
 			// 用户取消或 Run 级超时：保留已完成结果，未完成的补取消 Observation，保持 ToolCall 成对
 			if err := ctx.Err(); err != nil {
@@ -375,6 +425,16 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 				)
 				session.Append(observationMsgs...)
 				return false, reportErr
+			}
+
+			if err := toolCtx.Err(); err != nil {
+				EnsureToolObservations(
+					actionResp.ToolCalls,
+					observationMsgs,
+					"已超过本次运行的工具时间预算",
+				)
+				session.Append(observationMsgs...)
+				return false, fmt.Errorf("已超过本次运行的工具时间预算（已用 %s，上限 %s）", toolElapsed, e.MaxToolTime)
 			}
 
 			// 工具级超时/失败：作为 Observation 写入，Run 继续
@@ -409,6 +469,9 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 // 它不依赖外部 Session，打完就跑。
 // Reporter：为了让用户在终端看到子智能体的工作轨迹，我们将主线程的 Reporter 透传进来，并打上特殊标记。
 func (e *AgentEngine) RunSub(ctx context.Context, taskPrompt string, readOnlyRegistry tools.Registry, rep reporter.Reporter) (string, error) {
+	if err := e.checkSubagentBudget(); err != nil {
+		return "", err
+	}
 	ctx, rootSpan := observability.StartSpan(ctx, "Subagent.Run")
 	defer rootSpan.EndSpan()
 
