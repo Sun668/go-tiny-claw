@@ -92,7 +92,7 @@ func TestRunStopsBeforeNextGenerateWhenBudgetExceeded(t *testing.T) {
 	if err == nil {
 		t.Fatal("超过预算应失败")
 	}
-	if !strings.Contains(err.Error(), "Token 预算") {
+	if !strings.Contains(err.Error(), "本会话的 Token 预算") {
 		t.Fatalf("错误信息应说明超过预算，实际: %v", err)
 	}
 	if p.calls != 1 {
@@ -126,6 +126,47 @@ func TestRunAllowsCompletionWhenNoFurtherGenerate(t *testing.T) {
 
 	if err := eng.Run(context.Background(), session, nil); err != nil {
 		t.Fatalf("最后一轮答完即使用满预算也应成功: %v", err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("应只打 1 次模型，实际: %d", p.calls)
+	}
+}
+
+func TestRunStopsBeforeNextGenerateWhenRunBudgetExceeded(t *testing.T) {
+	p := &usageProvider{
+		usages: []schema.Usage{
+			{PromptTokens: 6, CompletionTokens: 4},
+			{PromptTokens: 6, CompletionTokens: 4},
+		},
+	}
+	eng := newBudgetEngine(t, p, 0)
+	eng.MaxTokensPerRun = 10
+	session := ctxpkg.NewSession("run-budget-1", t.TempDir())
+	session.RecordUsage(100, 0, 0)
+	session.Append(schema.Message{Role: schema.RoleUser, Content: "hi"})
+
+	err := eng.Run(context.Background(), session, nil)
+	if err == nil {
+		t.Fatal("超过本次运行预算应失败")
+	}
+	if !strings.Contains(err.Error(), "本次运行的 Token 预算") {
+		t.Fatalf("错误信息应说明超过本次运行预算，实际: %v", err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("超本次运行预算后不应再打模型，实际调用: %d", p.calls)
+	}
+}
+
+func TestRunBudgetIgnoresPreviousSessionUsageWhenCompleting(t *testing.T) {
+	p := &finalUsageProvider{usage: schema.Usage{PromptTokens: 6, CompletionTokens: 4}}
+	eng := newBudgetEngine(t, p, 0)
+	eng.MaxTokensPerRun = 10
+	session := ctxpkg.NewSession("run-budget-2", t.TempDir())
+	session.RecordUsage(100, 0, 0)
+	session.Append(schema.Message{Role: schema.RoleUser, Content: "hi"})
+
+	if err := eng.Run(context.Background(), session, nil); err != nil {
+		t.Fatalf("会话已有用量时，本次运行未再打模型应成功: %v", err)
 	}
 	if p.calls != 1 {
 		t.Fatalf("应只打 1 次模型，实际: %d", p.calls)

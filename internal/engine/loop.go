@@ -27,7 +27,8 @@ type AgentEngine struct {
 	MaxTurns           int
 	approvalGate       *approval.Gate
 	MaxToolConcurrency int
-	MaxTokens          int
+	MaxTokens       int
+	MaxTokensPerRun int
 }
 
 type IndexedToolCall struct {
@@ -56,7 +57,18 @@ func (e *AgentEngine) checkBudget(session *ctxpkg.Session) error {
 	}
 	used := session.TotalTokens()
 	if used >= e.MaxTokens {
-		return fmt.Errorf("已超过本次任务的 Token 预算（已用 %d，上限 %d）", used, e.MaxTokens)
+		return fmt.Errorf("已超过本会话的 Token 预算（已用 %d，上限 %d）", used, e.MaxTokens)
+	}
+	return nil
+}
+
+func (e *AgentEngine) checkRunBudget(session *ctxpkg.Session, runStart int) error {
+	if e.MaxTokensPerRun <= 0 || session == nil {
+		return nil
+	}
+	used := session.TotalTokens() - runStart
+	if used >= e.MaxTokensPerRun {
+		return fmt.Errorf("已超过本次运行的 Token 预算（已用 %d，上限 %d）", used, e.MaxTokensPerRun)
 	}
 	return nil
 }
@@ -94,6 +106,11 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 	composer := ctxpkg.NewPromptComposer(session.WorkDir, e.PlanMode)
 	systemMsg := composer.Build()
 
+	runStart := 0
+	if session != nil {
+		runStart = session.TotalTokens()
+	}
+
 	turnCount := 0
 
 	for {
@@ -130,6 +147,10 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 					return false, err
 				}
 
+				if err := e.checkRunBudget(session, runStart); err != nil {
+					return false, err
+				}
+
 				thinkCtx, thinkSpan := observability.StartSpan(turnCtx, "LLM.Thinking")
 				thinkResp, streamed, err := e.generate(thinkCtx, compactedContext, nil, rep, true)
 
@@ -159,6 +180,9 @@ func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, rep repo
 
 			// ================= Phase 2: Action =================
 			if err := e.checkBudget(session); err != nil {
+				return false, err
+			}
+			if err := e.checkRunBudget(session, runStart); err != nil {
 				return false, err
 			}
 			actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
